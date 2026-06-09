@@ -1,0 +1,24 @@
+{
+  "name": "anchor",
+  "version": "0.0.0",
+  "description": "A contract-driven, multi-role isolated coding harness.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "anchor": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "anchor": "pnpm build && node dist/cli/index.js",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "pnpm build && node --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.3.0"
+}

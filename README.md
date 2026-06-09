@@ -653,9 +653,29 @@ Topics to discuss before implementation:
 
 ---
 
+## Development
+
+Anchor is currently at R0: a TypeScript-first Node.js project skeleton with a placeholder CLI and baseline test.
+
+```bash
+pnpm install
+pnpm test
+pnpm typecheck
+pnpm build
+pnpm anchor --help
+```
+
+After building, the compiled CLI can also be run directly:
+
+```bash
+node dist/cli/index.js --help
+```
+
+---
+
 ## Status
 
-**Pre-implementation design phase.** This README is a design document. Nothing is built yet. Let's discuss, refine, then build.
+**R0 implementation baseline.** The TypeScript project skeleton, placeholder CLI, and test/build baseline are in place. Runtime state machine behavior, providers, adapters, persistence, and workspace isolation are not implemented yet.
 
 ---
 
