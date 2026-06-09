@@ -13,9 +13,15 @@ export function getAnchorHelp() {
     "Usage:",
     "  anchor --help",
     "  anchor --version",
+    "  anchor demo [--fixture happy|retry]",
+    "  anchor status <runId>",
+    "  anchor events <runId>",
     "",
-    "R3 status:",
-    "  TypeScript skeleton, transition core, JSONL event store, and permission guards are installed.",
-    "  Providers, real filesystem sandboxing, and CLI demo are not implemented."
+    "R4 status:",
+    "  Deterministic CLI demo, transition core, JSONL event store, and permission guards are installed.",
+    "  Providers, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented.",
+    "",
+    "Store:",
+    "  Set ANCHOR_STORE_PATH to override the default .anchor/runs.jsonl store."
   ].join("\n");
 }

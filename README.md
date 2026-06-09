@@ -655,7 +655,7 @@ Topics to discuss before implementation:
 
 ## Development
 
-Anchor is currently at R3: a TypeScript-first Node.js project skeleton with a deterministic state machine core, minimal event-sourced run store, and permission guard helpers.
+Anchor is currently at R4: a TypeScript-first deterministic CLI MVP demo backed by the state machine core, event-sourced run store, and permission guard helpers.
 
 ```bash
 pnpm install
@@ -670,6 +670,19 @@ After building, the compiled CLI can also be run directly:
 ```bash
 node dist/cli/index.js --help
 ```
+
+### CLI Quickstart
+
+The CLI writes to `.anchor/runs.jsonl` by default. Set `ANCHOR_STORE_PATH` to use a temp or project-specific store.
+
+```bash
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor demo
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor demo --fixture retry
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor status <runId>
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor events <runId>
+```
+
+CLI command output is stable JSON for `demo`, `status`, and `events`. `events` includes `seq`, `event_type`, `emitted_by`, `state_before`, and `state_after`.
 
 ### State Machine Core
 
@@ -732,15 +745,15 @@ validateWorkspacePolicy({
 });
 ```
 
-The run store calls `validateEventSource` before transition evaluation and refuses unauthorized events without writing them. Workspace policy helpers are pure checks only; R3 does not implement a real filesystem sandbox or git diff enforcement.
+The run store calls `validateEventSource` before transition evaluation and refuses unauthorized events without writing them. Workspace policy helpers are pure checks only; R4 does not implement a real filesystem sandbox or git diff enforcement.
 
-R3 does not include provider adapters, real filesystem sandboxing, git diff enforcement, or a full CLI demo.
+R4 does not include provider adapters, real filesystem sandboxing, git diff enforcement, or Web UI.
 
 ---
 
 ## Status
 
-**R3 implementation baseline.** The TypeScript project skeleton, placeholder CLI, deterministic transition core, JSONL event-sourced run store, permission/source guards, workspace policy helpers, and test/build baseline are in place. Providers, adapters, real filesystem sandboxing, git diff enforcement, and the full CLI demo are not implemented yet.
+**R4 TypeScript MVP baseline.** The deterministic CLI demo, TypeScript project skeleton, transition core, JSONL event-sourced run store, permission/source guards, workspace policy helpers, and test/build baseline are in place. Providers, adapters, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented yet.
 
 ---
 

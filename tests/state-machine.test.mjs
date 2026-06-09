@@ -39,10 +39,10 @@ const codeProduced = {
   attempt: 1
 };
 
-test("Anchor CLI placeholder still prints help and version", () => {
-  assert.match(runCli(["--help"]), /Usage:/);
+test("Anchor CLI still prints help and version", async () => {
+  assert.match((await runCli(["--help"])).output, /Usage:/);
   assert.match(getAnchorHelp(), /permission guards/);
-  assert.equal(runCli(["--version"]), "0.0.0");
+  assert.equal((await runCli(["--version"])).output, "0.0.0");
 });
 
 test("TASK_RECEIVED starts the run in PLAN", () => {
