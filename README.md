@@ -655,7 +655,7 @@ Topics to discuss before implementation:
 
 ## Development
 
-Anchor is currently at R2: a TypeScript-first Node.js project skeleton with a deterministic state machine core and minimal event-sourced run store.
+Anchor is currently at R3: a TypeScript-first Node.js project skeleton with a deterministic state machine core, minimal event-sourced run store, and permission guard helpers.
 
 ```bash
 pnpm install
@@ -716,13 +716,31 @@ await store.appendEvent(
 const snapshot = await store.getCurrentState("run_1");
 ```
 
-R2 does not include role permission guards, source authorization, provider adapters, workspace isolation, or a full CLI demo.
+### Permission Guards
+
+The R3 API exports pure permission helpers from `src/core/permissions.ts`.
+
+```typescript
+import { validateEventSource, validateWorkspacePolicy } from "anchor";
+
+validateEventSource("planner", "CONTRACT_PRODUCED");
+validateWorkspacePolicy({
+  role: "generator",
+  changedFiles: ["src/core/state-machine.ts"],
+  allowlist: ["src/**"],
+  denylist: ["secrets/**"]
+});
+```
+
+The run store calls `validateEventSource` before transition evaluation and refuses unauthorized events without writing them. Workspace policy helpers are pure checks only; R3 does not implement a real filesystem sandbox or git diff enforcement.
+
+R3 does not include provider adapters, real filesystem sandboxing, git diff enforcement, or a full CLI demo.
 
 ---
 
 ## Status
 
-**R2 implementation baseline.** The TypeScript project skeleton, placeholder CLI, deterministic transition core, JSONL event-sourced run store, and test/build baseline are in place. Providers, adapters, role permission guards, source authorization, workspace isolation, and the full CLI demo are not implemented yet.
+**R3 implementation baseline.** The TypeScript project skeleton, placeholder CLI, deterministic transition core, JSONL event-sourced run store, permission/source guards, workspace policy helpers, and test/build baseline are in place. Providers, adapters, real filesystem sandboxing, git diff enforcement, and the full CLI demo are not implemented yet.
 
 ---
 

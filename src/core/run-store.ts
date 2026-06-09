@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { validateEventSource } from "./permissions.js";
 import {
   type Event,
   type InitialState,
@@ -50,7 +51,7 @@ export type AppendEventOk = {
 
 export type AppendEventError = {
   ok: false;
-  code: "RUN_NOT_FOUND" | "INVALID_TRANSITION";
+  code: "RUN_NOT_FOUND" | "UNAUTHORIZED_EVENT_SOURCE" | "INVALID_TRANSITION";
   message: string;
   transition?: TransitionError;
 };
@@ -167,6 +168,15 @@ export function createFileRunStore(filePath: string): RunStore {
           ok: false,
           code: "RUN_NOT_FOUND",
           message: `Run not found: ${runId}`
+        };
+      }
+
+      const sourcePermission = validateEventSource(emittedBy, event.type);
+      if (!sourcePermission.ok) {
+        return {
+          ok: false,
+          code: "UNAUTHORIZED_EVENT_SOURCE",
+          message: sourcePermission.message
         };
       }
 

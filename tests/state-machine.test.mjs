@@ -41,7 +41,7 @@ const codeProduced = {
 
 test("Anchor CLI placeholder still prints help and version", () => {
   assert.match(runCli(["--help"]), /Usage:/);
-  assert.match(getAnchorHelp(), /deterministic transition core/);
+  assert.match(getAnchorHelp(), /permission guards/);
   assert.equal(runCli(["--version"]), "0.0.0");
 });
 
