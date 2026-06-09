@@ -176,13 +176,13 @@ async function runRole(role: AgentRole, state: State, context: RunContext) {
 
 ### Role-to-State Mapping
 
-Each role can only be invoked from specific states:
+Each role runs only in its assigned state:
 
-| Role | Allowed States |
+| Role | State |
 |---|---|
-| Planner | `TRIAGING`, `PLANNING`, `PLAN_REVISING` |
-| Reviewer | `REVIEWING` |
-| Generator | `GENERATING` |
-| Evaluator | `EVALUATING` |
-| Human | `AWAIT_PLAN_OK`, `AWAIT_HUMAN` |
-| System | `INIT`, `RETRYING`, `MERGING` |
+| Planner | `PLAN` |
+| Reviewer | `REVIEW` |
+| Generator | `BUILD` |
+| Evaluator | `CHECK` |
+| Human | `HUMAN` |
+| System | (transitions only — no dedicated state) |

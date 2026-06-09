@@ -30,10 +30,9 @@ Every task flows through up to four roles. They run in **separate processes, sep
 
 ### Planner
 
-Plans the work. Has two faces:
+Enters in `PLAN` state. Does everything upfront in one call:
 
-- **Lightweight triage**: A cheap initial scan that reads the file tree + package manifest and outputs `{ mode, reasoning, affected_scope }`. Used to route the task to the right execution mode.
-- **Full planning**: Produces a structured `Contract` — task decomposition, ordered steps, testable acceptance criteria, allowlist/denylist, constraints, completion gate.
+- **Triage + planning combined**. Reads the file tree, determines execution mode, and produces a structured `Contract` — task decomposition, ordered steps, testable acceptance criteria, allowlist/denylist, constraints, completion gate. For quick mode, the contract is a lightweight 3-5 bullet spec instead of a full document.
 
 | Property | Value |
 |---|---|
@@ -86,136 +85,98 @@ Evaluator's tests live in `.anchor/eval/tests/` — isolated from Generator's wo
 
 ## The State Machine
 
-Anchor is built around a **deterministic finite state machine**. The state machine is the skeleton; LLMs are stateless pure functions called at each state. The machine decides what happens next based on **structured, verifiable outputs** — not on LLM quality judgments.
+Anchor is built around a **deterministic finite state machine**. One rule: **each state = an agent (or human) is actively doing work.** No interstitial states.
 
 ```
-                          ┌──────────┐
-                          │   INIT   │
-                          └────┬─────┘
-                               │ TASK_RECEIVED
-                               ▼
-                          ┌──────────┐
-                          │ TRIAGING │   Planner 轻量扫描
-                          └────┬─────┘
-                               │ TRIAGE_COMPLETE
-                               ▼
-                          (auto-proceed)
-                     ┌────────┼────────┐
-               quick │        │        │ standard / thorough
-                     │        │        │
-                     ▼        │        ▼
-              ┌──────────┐    │   ┌──────────────┐
-              │GENERATING│    │   │  PLANNING    │   Planner 出完整合同
-              └────┬─────┘    │   └──────┬───────┘
-                     └──┬───────┬───┘
-                        │       │
-                 quick  │       │ standard
-                        │       │
-                   (auto)│       ▼
-                        │ ┌────────────────┐
-                        │ │ AWAIT_PLAN_OK │  人审合同 (standard)
-                        │ └───────┬────────┘
-                        │         │ CONTRACT_APPROVED
-                        │         ▼
-                        │    ┌──────────┐
-                        │    │GENERATING│
-                        │    └────┬─────┘
-                        │         │
-              thorough │         │
-                       ▼         │
-                  ┌──────────┐   │
-                  │REVIEWING │   Reviewer 审合同
-                  └────┬─────┘
-                       │ REVIEW_COMPLETE
-                  ┌────┼────┐
-             READY│    │NEEDS_REVISION
-                  │    ▼
-                  │ ┌───────────────┐
-                  │ │ PLAN_REVISING │  Planner 改合同
-                  │ └───────┬───────┘
-                  │         │ CONTRACT_REVISED
-                  │         ▼
-                  │    ┌──────────┐
-                  │    │REVIEWING │  再审（最多 M 轮）
-                  │    └────┬─────┘
-                  │         │ READY
-                  ▼         ▼
-             ┌────────────────────┐
-             │  AWAIT_PLAN_OK     │  人拍板最终合同 (thorough)
-             └────────┬───────────┘
-                      │ CONTRACT_APPROVED
-                      ▼
-                 ┌──────────────────────┐
-                 │    GENERATING        │
-                 └──────────┬───────────┘
-                            │ CODE_PRODUCED
-                            ▼
-                 ┌──────────────────────┐
-                 │    EVALUATING        │  写测试 + 跑测试 + 审代码
-                 └──────────┬───────────┘
-                            │ EVAL_COMPLETE
-                   ┌────────┼────────┐
-                   ▼        ▼        ▼
-                 PASS     FAIL     FAIL
-                   │        │    (retries_left > 0)
-                   │        │        │
-                   ▼        ▼        ▼
-              ┌────────┐ ┌──────────────┐
-              │MERGING │ │  RETRYING    │  retry_count++
-              └────────┘ └──────┬───────┘
-                                │
-                                ▼
-                         ┌──────────────┐
-                         │  GENERATING  │  (同一合同, 新的尝试)
-                         └──────────────┘
-                                │
-                   (loop back to EVALUATING)
+                    TASK_RECEIVED
+                         │
+                         ▼
+                    ┌────────┐
+                    │  PLAN  │  Planner: triage + contract
+                    └───┬────┘
+                        │
+              ┌─────────┼─────────┐
+         quick│         │standard  │thorough
+              │         │          │
+              │         ▼          ▼
+              │    ┌────────┐  ┌────────┐
+              │    │ HUMAN  │  │ REVIEW │  Reviewer 审合同
+              │    │ 批合同  │  └───┬────┘
+              │    └───┬────┘      │
+              │        │      ┌────┼────┐
+              │        │  READY    │NEEDS_REVISION
+              │        │      │    ▼
+              │        │      │  PLAN    (改合同, review_retries--)
+              │        │      │    │
+              │        │      │    ▼
+              │        │      │  REVIEW  (再审, 最多 M 轮)
+              │        │      │    │ READY
+              │        ▼      ▼    ▼
+              │   ┌──────────────────┐
+              │   │      HUMAN       │  人拍板合同 (thorough)
+              │   └────────┬─────────┘
+              │            │ CONTRACT_APPROVED
+              ▼            ▼
+         ┌──────────────────────┐
+         │        BUILD         │  Generator 写代码
+         └──────────┬───────────┘
+                    │ CODE_PRODUCED
+                    ▼
+         ┌──────────────────────┐
+         │        CHECK         │  Evaluator 测代码
+         └──────────┬───────────┘
+                    │ EVAL_COMPLETE
+           ┌────────┼────────┐
+           ▼        ▼        ▼
+         PASS     FAIL     FAIL
+           │        │    (retries_left > 0)
+           │        │        │
+           ▼        ▼        ▼
+         DONE     BUILD    HUMAN   (retries_left == 0)
+                           │
+                      ┌────┼────┐
+                 amend│         │force_pass
+                 plan │         │
+                      ▼         ▼
+                    PLAN      DONE
 
-              FAIL + retries_left == 0
-                   │
-                   ▼
-         ┌──────────────────┐
-         │  AWAIT_HUMAN     │  人介入
-         └────┬─────┬───────┘
-              │     │
-      amend   │     │ force_pass
-      plan    │     │
-              ▼     ▼
-    ┌───────────┐  ┌─────────┐
-    │PLAN_REVISE│  │ MERGING │
-    └───────────┘  └─────────┘
-              │
-        (re-enter planning flow)
-
-
-    任何时刻 human 按 abort
-         │
-         ▼
-    ┌──────────┐
-    │ ABORTED  │
-    └──────────┘
+    任何状态 → ABORT (人中断)
 ```
 
-### State transitions are driven by verifiable structure
+### How the state machine decides
 
-The state machine does not judge "good" or "bad." It only checks: **is the output structurally valid? What does the verdict field say?**
+It doesn't judge "good" or "bad." It only checks: **is the output structurally valid? What does the verdict say? What does context say?**
 
-| Transition | Triggered by |
-|---|---|
-| TRIAGING → (auto-proceeds) | Planner outputs valid `{ mode, reasoning, affected_scope }` → auto-proceeds based on mode |
-| REVIEWING → PLAN_REVISING | Reviewer outputs `{ verdict: NEEDS_REVISION, gaps: [...] }` |
-| EVALUATING → RETRYING | Evaluator outputs `{ verdict: FAIL }` and `retries_left > 0` |
-| EVALUATING → AWAIT_HUMAN | `{ verdict: FAIL }` and `retries_left == 0` |
-| RETRYING → GENERATING | (automatic, increment retry_count) |
+| Current | Event | Next state | Condition |
+|---|---|---|---|
+| — | `TASK_RECEIVED` | `PLAN` | — |
+| `PLAN` | `CONTRACT_PRODUCED` | `BUILD` | `mode === 'quick'` |
+| `PLAN` | `CONTRACT_PRODUCED` | `HUMAN` | `mode === 'standard'` |
+| `PLAN` | `CONTRACT_PRODUCED` | `REVIEW` | `mode === 'thorough'` |
+| `REVIEW` | `REVIEW_COMPLETE (READY)` | `HUMAN` | — |
+| `REVIEW` | `REVIEW_COMPLETE (NEEDS_REVISION)` | `PLAN` | `review_retries_left > 0` |
+| `REVIEW` | `REVIEW_COMPLETE (NEEDS_REVISION)` | `HUMAN` | `review_retries_left == 0` |
+| `HUMAN` | `CONTRACT_APPROVED` | `BUILD` | — |
+| `HUMAN` | `HUMAN_FORCE_PASS` | `DONE` | — |
+| `HUMAN` | `HUMAN_AMEND_PLAN` | `PLAN` | — |
+| `BUILD` | `CODE_PRODUCED` | `CHECK` | — |
+| `CHECK` | `EVAL_COMPLETE (PASS)` | `DONE` | — |
+| `CHECK` | `EVAL_COMPLETE (FAIL)` | `BUILD` | `retries_left > 0` |
+| `CHECK` | `EVAL_COMPLETE (FAIL)` | `HUMAN` | `retries_left == 0` |
+| any non-terminal | `HUMAN_ABORT` | `ABORT` | — |
+
+The `HUMAN` state serves two purposes — contract approval and escalation — distinguished by context. Same state, same actor, different reason for being there.
 
 ### Event sourcing
 
-Every state transition is an **immutable event** persisted to SQLite. The current state is `events.reduce(transition, 'INIT')`.
+Every state transition is an **immutable event** persisted to SQLite. The current state is `events.reduce(transition, null)`.
 
 - **Full audit trail**: know exactly why any decision was made
 - **Crash recovery**: replay events to restore state
 - **Time travel**: rewind to any event and branch (e.g., re-run Generator with a different model from the same contract)
 - **No hidden state**: the event log IS the truth
+
+See [docs/state-machine.md](docs/state-machine.md) for the full formal specification.
 
 ---
 
@@ -226,50 +187,48 @@ Not every task needs all four roles. Anchor has three execution modes:
 ### quick — simple, local changes
 
 ```
-Human sends task → Planner triage (auto) → Generator → Evaluator → merge
-
-Skipped: full planning, Reviewer, human plan review
-Still runs: Generator, Evaluator (every change gets tested independently)
+PLAN (light contract) → BUILD → CHECK → DONE
 ```
+
+Planner produces a lightweight spec (3-5 bullets), no formal contract. No human review. Generator builds, Evaluator checks.
 
 Example: fix a CSS class, rename a variable, update a dependency version.
 
 ### standard — moderate features (default)
 
 ```
-Human sends task → Planner triage (auto) → Planner full contract
-  → Human reviews contract → Generator → Evaluator → (retry loop) → merge
-
-Skipped: Reviewer (contract review)
+PLAN (full contract) → HUMAN (批合同) → BUILD → CHECK ⇄ BUILD (retry) → DONE
 ```
+
+Planner produces a full contract. Human reviews and approves. Generator builds, Evaluator checks, retries up to N times on failure.
 
 Example: add a new API endpoint, refactor a module, add basic auth.
 
 ### thorough — complex, cross-domain changes
 
 ```
-Human sends task → Planner triage (auto) → Planner full contract
-  → Reviewer reviews contract → Planner revises → Reviewer re-reviews (up to M rounds)
-  → Human approves final contract → Generator → Evaluator → (retry loop) → merge
+PLAN (full contract) → REVIEW ⇄ PLAN (revise, up to M rounds)
+  → HUMAN (批合同) → BUILD → CHECK ⇄ BUILD (retry) → DONE
 ```
+
+Planner produces a full contract. Reviewer checks it for structural flaws before any code is written. Planner revises based on feedback. Loop until READY or budget exhausted. Then human approves, Generator builds, Evaluator checks.
 
 Example: migrate payment provider, restructure database, add multi-tenant isolation.
 
-### Triage is cheap and auto-proceeds
+### Planner does everything upfront
 
-The triage step runs a **lightweight Planner scan** — reads the file tree and package manifest, outputs mode advice, costs one LLM call:
+The `PLAN` state handles both triage and contract production in one call. The output includes:
 
 ```json
 {
   "mode": "thorough",
-  "reasoning": "Cross-domain migration: billing, payment, subscription, and invoice modules all touched. External API dependency. Payment state machine involved.",
-  "affected_scope": ["src/billing/", "src/payment/", "src/subscription/", "src/invoice/"]
+  "reasoning": "Cross-domain migration: billing, payment, subscription, and invoice modules all touched.",
+  "affected_scope": ["src/billing/", "src/payment/", "src/subscription/", "src/invoice/"],
+  "contract": { ... }  // null for quick mode
 }
 ```
 
-**Auto-proceeds** — the result is displayed, then Anchor moves to the next state immediately. No human confirmation required. If the triage gets the mode wrong, the worst case is safe: quick mode on a complex task will fail in Generator/Evaluator and escalate. The human can always `Ctrl+C` to abort and re-run with `--mode`.
-
-To force a specific mode (bypass triage entirely): `anchor run --mode quick|standard|thorough`.
+**Auto-proceeds** — the mode is displayed, then Anchor moves to the next state. No human confirmation on triage. If the mode is wrong, the worst case is safe: quick mode on a complex task will fail in CHECK and escalate. Bypass entirely with `anchor run --mode quick|standard|thorough`.
 
 ---
 
@@ -490,10 +449,10 @@ Anchor itself doesn't implement tools (read, write, bash, etc.) — it inherits 
 # Initialize anchor in a project
 anchor init
 
-# Run with auto-triage (default, no human confirmation)
+# Run with auto-triage (default)
 anchor run "Add OAuth 2.0 device code flow"
 
-# Bypass triage entirely, force a mode
+# Force a mode (skip Planner's mode decision)
 anchor run "Fix login button alignment" --mode quick
 anchor run "Migrate billing to Stripe" --mode thorough
 
@@ -507,20 +466,17 @@ anchor run "Refactor auth module" \
   --generator codex      --model gpt-4o \
   --evaluator pi         --model claude-sonnet-4
 
-# Dry run: Planner only
+# Dry run: Planner only (stops after contract, no REVIEW/BUILD/CHECK)
 anchor plan "Add rate limiting" --mode thorough
 
 # Resume after human intervention
-anchor resume feat-oauth-42 --from generating
+anchor resume feat-oauth-42 --from build
 
-# Show run history and status
+# Show run history
 anchor status
 anchor log feat-oauth-42
 
-# Compare contracts across runs
-anchor diff feat-oauth-42-run1 feat-oauth-42-run2
-
-# Show event log for a run
+# Show event log
 anchor events feat-oauth-42
 ```
 
@@ -533,35 +489,29 @@ anchor events feat-oauth-42
 ```bash
 $ anchor run "Fix login button alignment" --mode quick
 
-Triage → quick (CSS-only, single component) — proceeding
-
-Generating... done
-Evaluating... PASS (2/2 tests pass, no regressions)
-
-→ merged to feature/anchor-login-fix
+PLAN → quick (CSS-only, single component)
+BUILD → done
+CHECK → PASS (2/2 tests, no regressions)
+DONE
 ```
 
 ### standard mode
 
 ```bash
 $ anchor run "Add rate limiting to API gateway"
-# default: auto-triage
 
-Triage → standard (single module, moderate scope) — proceeding
+PLAN → standard (single module, moderate scope)
+  contract: contracts/rate-limit-001.yaml
 
-Planning... contract produced → contracts/rate-limit-001.yaml
-Review contract? [y/N/edit] y
+HUMAN → Review contract? [y/N/edit] y
 
-Generating... done
-Evaluating... FAIL
+BUILD → done
+CHECK → FAIL
   Step 2: rate limit per-endpoint instead of per-IP
   Step 4: missing test for burst allowance
-Retrying (1/3)...
-
-Generating... done
-Evaluating... PASS
-
-→ merged to feature/anchor-rate-limiting
+BUILD → retry 1/3... done
+CHECK → PASS
+DONE
 ```
 
 ### thorough mode
@@ -569,29 +519,25 @@ Evaluating... PASS
 ```bash
 $ anchor run "Migrate billing to new payment provider" --mode thorough
 
-Triage → thorough — proceeding
+PLAN → thorough
+  contract: contracts/billing-migration-001.yaml
 
-Planning... contract produced → contracts/billing-migration-001.yaml
-Reviewing... NEEDS_REVISION (3 gaps found)
+REVIEW → NEEDS_REVISION (3 gaps)
   [critical] Payment state machine not in allowlist
-  [high]     No rollback strategy defined
-  [medium]   Constraint missing: don't break existing subscriptions
+  [high]     No rollback strategy
+  [medium]   Constraint missing: don't break subscriptions
+PLAN → contract revised → v1.1
+REVIEW → READY
 
-Plan revising... contract updated → v1.1
-Reviewing... READY
+HUMAN → Review final contract? [y/N/edit] y
 
-Review final contract? [y/N/edit] y
-
-Generating... done
-Evaluating... FAIL
-  Step 1: New provider adapter doesn't implement Refund interface
-  Step 3: Migration script assumes synchronous — breaks for large accounts
-Retrying (1/3)...
-
-Generating... done
-Evaluating... PASS
-
-→ merged to feature/anchor-billing-migration
+BUILD → done
+CHECK → FAIL
+  Step 1: adapter missing Refund interface
+  Step 3: migration script not async-safe
+BUILD → retry 1/3... done
+CHECK → PASS
+DONE
 ```
 
 ---
@@ -691,8 +637,8 @@ Topics to discuss before implementation:
 
 ## Docs
 
-- [State Machine Specification](docs/state-machine.md) — Formal state machine: all states, events, transitions, invariants, error handling
-- [Agent Permission Model](docs/permissions.md) — Two-layer permission design: capability permissions + transition permissions + enforcement
+- [State Machine Specification](docs/state-machine.md) — Formal specification: states, events, transitions, invariants, event store, error handling
+- [Agent Permission Model](docs/permissions.md) — Capability permissions + transition permissions + role-to-state mapping
 
 ---
 
