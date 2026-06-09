@@ -1,5 +1,7 @@
 export const anchorVersion = "0.0.0";
 
+export * from "./core/state-machine.js";
+
 export function getAnchorHelp() {
   return [
     "Anchor",
@@ -10,8 +12,8 @@ export function getAnchorHelp() {
     "  anchor --help",
     "  anchor --version",
     "",
-    "R0 status:",
-    "  TypeScript project skeleton and CLI placeholder are installed.",
-    "  Runtime state machine, providers, and workspace isolation are not implemented in R0."
+    "R1 status:",
+    "  TypeScript project skeleton and deterministic transition core are installed.",
+    "  Persistence, providers, permission guards, workspace isolation, and CLI demo are not implemented."
   ].join("\n");
 }

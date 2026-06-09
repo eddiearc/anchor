@@ -655,7 +655,7 @@ Topics to discuss before implementation:
 
 ## Development
 
-Anchor is currently at R0: a TypeScript-first Node.js project skeleton with a placeholder CLI and baseline test.
+Anchor is currently at R1: a TypeScript-first Node.js project skeleton with a deterministic state machine core.
 
 ```bash
 pnpm install
@@ -671,11 +671,35 @@ After building, the compiled CLI can also be run directly:
 node dist/cli/index.js --help
 ```
 
+### State Machine Core
+
+The R1 core exports a pure `transition(state, event, context)` function and TypeScript types from `src/core/state-machine.ts`.
+
+```typescript
+import { transition } from "anchor";
+
+const result = transition(
+  "PLAN",
+  {
+    type: "CONTRACT_PRODUCED",
+    mode: "quick",
+    reasoning: "Small local change",
+    affected_scope: ["src/"]
+  },
+  {
+    retriesLeft: 3,
+    reviewRetriesLeft: 2
+  }
+);
+```
+
+R1 does not include persistence, event replay, role permission guards, provider adapters, workspace isolation, or a full CLI demo.
+
 ---
 
 ## Status
 
-**R0 implementation baseline.** The TypeScript project skeleton, placeholder CLI, and test/build baseline are in place. Runtime state machine behavior, providers, adapters, persistence, and workspace isolation are not implemented yet.
+**R1 implementation baseline.** The TypeScript project skeleton, placeholder CLI, deterministic transition core, and test/build baseline are in place. Providers, adapters, persistence, role permission guards, workspace isolation, and the full CLI demo are not implemented yet.
 
 ---
 

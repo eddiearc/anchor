@@ -4,6 +4,14 @@
   "description": "A contract-driven, multi-role isolated coding harness.",
   "type": "module",
   "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "bin": {
     "anchor": "./dist/cli/index.js"
   },
