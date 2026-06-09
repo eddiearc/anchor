@@ -655,7 +655,7 @@ Topics to discuss before implementation:
 
 ## Development
 
-Anchor is currently at R1: a TypeScript-first Node.js project skeleton with a deterministic state machine core.
+Anchor is currently at R2: a TypeScript-first Node.js project skeleton with a deterministic state machine core and minimal event-sourced run store.
 
 ```bash
 pnpm install
@@ -693,13 +693,36 @@ const result = transition(
 );
 ```
 
-R1 does not include persistence, event replay, role permission guards, provider adapters, workspace isolation, or a full CLI demo.
+### Event-Sourced Run Store
+
+The R2 API exports a default JSONL file store from `src/core/run-store.ts`. Current state is replayed from persisted events; there is no separate current-state field.
+
+```typescript
+import { createFileRunStore } from "anchor";
+
+const store = createFileRunStore(".anchor/events.jsonl");
+await store.createRun("Fix login bug", { id: "run_1" });
+await store.appendEvent(
+  "run_1",
+  {
+    type: "CONTRACT_PRODUCED",
+    mode: "quick",
+    reasoning: "Small local change",
+    affected_scope: ["src/"]
+  },
+  "planner"
+);
+
+const snapshot = await store.getCurrentState("run_1");
+```
+
+R2 does not include role permission guards, source authorization, provider adapters, workspace isolation, or a full CLI demo.
 
 ---
 
 ## Status
 
-**R1 implementation baseline.** The TypeScript project skeleton, placeholder CLI, deterministic transition core, and test/build baseline are in place. Providers, adapters, persistence, role permission guards, workspace isolation, and the full CLI demo are not implemented yet.
+**R2 implementation baseline.** The TypeScript project skeleton, placeholder CLI, deterministic transition core, JSONL event-sourced run store, and test/build baseline are in place. Providers, adapters, role permission guards, source authorization, workspace isolation, and the full CLI demo are not implemented yet.
 
 ---
 
