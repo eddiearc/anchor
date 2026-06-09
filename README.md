@@ -482,25 +482,7 @@ Anchor itself doesn't implement tools (read, write, bash, etc.) — it inherits 
 
 ---
 
-## Comparison
 
-| | Anchor | OpenRig | oh-my-agent | Citadel | Claude Code |
-|---|---|---|---|---|---|
-| **Role isolation** | ✅ 4 roles | ❌ | ❌ | Partial | ❌ |
-| **Contract-driven** | ✅ YAML | ❌ | ❌ | ❌ | ❌ |
-| **Contract review (pre-code)** | ✅ Reviewer | ❌ | ❌ | ❌ | ❌ |
-| **Structured eval** | ✅ Feedback Spec | ❌ | ❌ | ❌ | ❌ |
-| **Evaluator writes tests** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Iteration loop** | ✅ state machine | ❌ manual | ❌ | Partial | ❌ manual |
-| **Mode routing** | ✅ quick/standard/thorough | ❌ | ❌ | ❌ | ❌ |
-| **State machine** | ✅ event-sourced | ❌ | ❌ | ❌ | ❌ |
-| **Multi-harness** | ✅ adapters | ✅ Claude+Codex | ✅ config projection | ✅ Claude+Codex | ❌ |
-| **Human checkpoints** | ✅ between stages | ❌ | ❌ | ❌ | ❌ |
-| **Layer** | Execution orchestration | Session mgmt | Skill/rule projection | Routing+Fleet | Single agent |
-
-Anchor doesn't replace your coding agent — it sits above it, giving it a planner, a reviewer, an assignment, and an inspector.
-
----
 
 ## CLI Design (Draft)
 
