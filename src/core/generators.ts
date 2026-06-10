@@ -442,9 +442,10 @@ function readYamlList(contract: string, key: "allowlist" | "denylist") {
     return [];
   }
 
+  const keyIndent = indentOf(lines[keyLine]);
   const values: string[] = [];
   for (const line of lines.slice(keyLine + 1)) {
-    if (/^\S/.test(line)) {
+    if (line.trim() && indentOf(line) <= keyIndent) {
       break;
     }
     const match = /^\s*-\s*(.+?)\s*$/.exec(line);
@@ -453,6 +454,10 @@ function readYamlList(contract: string, key: "allowlist" | "denylist") {
     }
   }
   return values;
+}
+
+function indentOf(line: string) {
+  return line.match(/^\s*/)?.[0].length ?? 0;
 }
 
 function unquote(value: string) {

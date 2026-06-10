@@ -62,6 +62,15 @@ async function createFakeCodexScript(paths) {
       "const prompt = process.argv.at(-1) ?? '';",
       "const runId = /Run ID: (\\S+)/.exec(prompt)?.[1] ?? 'unknown-run';",
       "const mode = process.env.ANCHOR_FAKE_CODEX_MODE ?? 'success';",
+      "const allowedLine = prompt.split('\\n').find((line) => line.startsWith('- Stay inside allowed scope:')) ?? '';",
+      "const deniedLine = prompt.split('\\n').find((line) => line.startsWith('- Do not change denied paths:')) ?? '';",
+      "const denyItems = ['.env*', 'secrets/**', 'node_modules/**', 'dist/**', '.git/**'];",
+      "const leakedDenyItems = denyItems.filter((item) => allowedLine.includes(item));",
+      "const missingDenyItems = denyItems.filter((item) => !deniedLine.includes(item));",
+      "if (leakedDenyItems.length || missingDenyItems.length) {",
+      "  console.error(JSON.stringify({ allowedLine, deniedLine, leakedDenyItems, missingDenyItems }));",
+      "  process.exit(19);",
+      "}",
       "if (mode === 'nonzero') {",
       "  console.error('fake codex failure');",
       "  process.exit(17);",
@@ -72,6 +81,7 @@ async function createFakeCodexScript(paths) {
       "  await mkdir(path.dirname(filePath), { recursive: true });",
       "  await writeFile(filePath, [`runId=${runId}`, `mode=${mode}`, `cwd=${process.cwd()}`, 'adapter=codex', ''].join('\\n'));",
       "}",
+      "console.log('fake codex prompt policy ok');",
       "console.log(`fake codex ${mode}`);"
     ].join("\n")
   );
@@ -190,6 +200,7 @@ test("codex generator runs fake command in worktree, writes report, and advances
   assert.equal(report.command, process.execPath);
   assert.deepEqual(report.argv, [scriptPath, "[prompt redacted]"]);
   assert.equal(report.exitCode, 0);
+  assert.match(report.stdoutSummary, /fake codex prompt policy ok/);
   assert.match(report.stdoutSummary, /fake codex success/);
   assert.deepEqual(report.policyResult, { ok: true });
   assert.match(report.summary, /Codex generator changed 1 file/);
