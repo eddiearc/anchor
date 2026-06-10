@@ -30,7 +30,7 @@ export type WorkspacePolicyInput = {
 };
 
 const EVENT_SOURCE_PERMISSIONS: Record<AgentRole, Event["type"][]> = {
-  system: ["TASK_RECEIVED"],
+  system: ["TASK_RECEIVED", "WORKSPACE_CREATED", "WORKSPACE_CLEANED"],
   planner: ["CONTRACT_PRODUCED"],
   reviewer: ["REVIEW_COMPLETE"],
   human: ["CONTRACT_APPROVED", "HUMAN_FORCE_PASS", "HUMAN_AMEND_PLAN", "HUMAN_ABORT"],

@@ -5,9 +5,12 @@ import { randomUUID } from "node:crypto";
 import {
   anchorVersion,
   createFileRunStore,
+  createGitWorkspace,
   createTemplateContract,
+  cleanupGitWorkspace,
   getAnchorHelp,
   readContractArtifact,
+  readWorkspaceStatus,
   writeContractArtifact,
   type Event,
   type StoredEvent
@@ -15,6 +18,7 @@ import {
 
 const defaultStorePath = ".anchor/runs.jsonl";
 const defaultRunsDir = ".anchor/runs";
+const defaultWorktreesDir = ".anchor/worktrees";
 
 type CliResult = {
   exitCode: number;
@@ -24,6 +28,7 @@ type CliResult = {
 type CliOptions = {
   storePath?: string;
   runsDir?: string;
+  worktreesDir?: string;
 };
 
 export async function runCli(args: string[], options: CliOptions = {}): Promise<CliResult> {
@@ -38,6 +43,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   const [command, ...rest] = args;
   const storePath = options.storePath ?? process.env.ANCHOR_STORE_PATH ?? defaultStorePath;
   const runsDir = options.runsDir ?? process.env.ANCHOR_RUNS_DIR ?? defaultRunsDir;
+  const worktreesDir = options.worktreesDir ?? process.env.ANCHOR_WORKTREES_DIR ?? defaultWorktreesDir;
 
   if (command === "plan") {
     return json(await runPlan(rest, storePath, runsDir));
@@ -49,6 +55,10 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
 
   if (command === "approve") {
     return json(await runApprove(rest[0], storePath, runsDir));
+  }
+
+  if (command === "workspace") {
+    return json(await runWorkspace(rest, storePath, runsDir, worktreesDir));
   }
 
   if (command === "demo") {
@@ -66,6 +76,186 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   return {
     exitCode: 1,
     output: [`Unknown command: ${command}`, "", getAnchorHelp()].join("\n")
+  };
+}
+
+async function runWorkspace(args: string[], storePath: string, runsDir: string, worktreesDir: string) {
+  const [subcommand, runId] = args;
+  if (!subcommand || !["create", "status", "cleanup"].includes(subcommand)) {
+    return {
+      ok: false,
+      error: "workspace_subcommand_required",
+      usage: "anchor workspace <create|status|cleanup> <runId>",
+      storePath,
+      runsDir,
+      worktreesDir
+    };
+  }
+
+  if (subcommand === "create") {
+    return runWorkspaceCreate(runId, storePath, runsDir, worktreesDir);
+  }
+
+  if (subcommand === "status") {
+    return runWorkspaceStatus(runId, storePath, runsDir, worktreesDir);
+  }
+
+  return runWorkspaceCleanup(runId, storePath, runsDir, worktreesDir);
+}
+
+async function runWorkspaceCreate(runId: string | undefined, storePath: string, runsDir: string, worktreesDir: string) {
+  if (!runId) {
+    return { ok: false, error: "run_id_required", storePath, runsDir, worktreesDir };
+  }
+
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(runId);
+  if (!snapshot) {
+    return { ok: false, error: "run_not_found", runId, storePath, runsDir, worktreesDir };
+  }
+  if (snapshot.state !== "BUILD") {
+    return {
+      ok: false,
+      error: "workspace_requires_approved_build_state",
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir
+    };
+  }
+
+  const events = await store.listEvents(runId);
+  const contractSha = latestApprovedContractSha(events);
+  if (!contractSha) {
+    return { ok: false, error: "approved_contract_sha_required", runId, state: snapshot.state, storePath, runsDir, worktreesDir };
+  }
+
+  const workspace = await createGitWorkspace({
+    runsDir,
+    worktreesDir,
+    runId,
+    contractSha
+  });
+  if (!workspace.ok) {
+    return { ok: false, error: workspace, runId, state: snapshot.state, storePath, runsDir, worktreesDir };
+  }
+
+  let event = null;
+  if (workspace.created) {
+    const result = await store.appendEvent(
+      runId,
+      {
+        type: "WORKSPACE_CREATED",
+        base_commit: workspace.metadata.baseCommit,
+        branch: workspace.metadata.branch,
+        worktree_path: workspace.metadata.worktreePath,
+        contract_sha: workspace.metadata.contractSha
+      },
+      "system"
+    );
+    if (!result.ok) {
+      return { ok: false, error: result, runId, state: snapshot.state, storePath, runsDir, worktreesDir, workspace };
+    }
+    event = summarizeEvent(result.event);
+  }
+
+  return {
+    ok: true,
+    command: "workspace create",
+    runId,
+    state: (await store.getCurrentState(runId))?.state ?? snapshot.state,
+    storePath,
+    runsDir,
+    worktreesDir,
+    created: workspace.created,
+    workspace: workspace.metadata,
+    status: workspace.status,
+    event
+  };
+}
+
+async function runWorkspaceStatus(runId: string | undefined, storePath: string, runsDir: string, worktreesDir: string) {
+  if (!runId) {
+    return { ok: false, error: "run_id_required", storePath, runsDir, worktreesDir };
+  }
+
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(runId);
+  if (!snapshot) {
+    return { ok: false, error: "run_not_found", runId, storePath, runsDir, worktreesDir };
+  }
+
+  const workspace = await readWorkspaceStatus(runsDir, runId);
+  if (!workspace) {
+    return {
+      ok: false,
+      error: "workspace_not_found",
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir
+    };
+  }
+
+  return {
+    ok: true,
+    command: "workspace status",
+    runId,
+    state: snapshot.state,
+    storePath,
+    runsDir,
+    worktreesDir,
+    workspace: workspace.metadata,
+    status: workspace.status
+  };
+}
+
+async function runWorkspaceCleanup(runId: string | undefined, storePath: string, runsDir: string, worktreesDir: string) {
+  if (!runId) {
+    return { ok: false, error: "run_id_required", storePath, runsDir, worktreesDir };
+  }
+
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(runId);
+  if (!snapshot) {
+    return { ok: false, error: "run_not_found", runId, storePath, runsDir, worktreesDir };
+  }
+
+  const workspace = await cleanupGitWorkspace({ runsDir, runId });
+  if (!workspace.ok) {
+    return { ok: false, error: workspace, runId, state: snapshot.state, storePath, runsDir, worktreesDir };
+  }
+
+  let event = null;
+  if (workspace.cleaned) {
+    const result = await store.appendEvent(
+      runId,
+      {
+        type: "WORKSPACE_CLEANED",
+        worktree_path: workspace.metadata.worktreePath
+      },
+      "system"
+    );
+    if (!result.ok) {
+      return { ok: false, error: result, runId, state: snapshot.state, storePath, runsDir, worktreesDir, workspace };
+    }
+    event = summarizeEvent(result.event);
+  }
+
+  return {
+    ok: true,
+    command: "workspace cleanup",
+    runId,
+    state: (await store.getCurrentState(runId))?.state ?? snapshot.state,
+    storePath,
+    runsDir,
+    worktreesDir,
+    cleaned: workspace.cleaned,
+    workspace: workspace.metadata,
+    status: workspace.status,
+    event
   };
 }
 

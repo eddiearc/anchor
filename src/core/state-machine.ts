@@ -34,6 +34,19 @@ export type ContractApprovedEvent = {
   contract_sha?: string;
 };
 
+export type WorkspaceCreatedEvent = {
+  type: "WORKSPACE_CREATED";
+  base_commit: string;
+  branch: string;
+  worktree_path: string;
+  contract_sha: string;
+};
+
+export type WorkspaceCleanedEvent = {
+  type: "WORKSPACE_CLEANED";
+  worktree_path: string;
+};
+
 export type HumanForcePassEvent = {
   type: "HUMAN_FORCE_PASS";
   reason: string;
@@ -66,6 +79,8 @@ export type Event =
   | ContractProducedEvent
   | ReviewCompleteEvent
   | ContractApprovedEvent
+  | WorkspaceCreatedEvent
+  | WorkspaceCleanedEvent
   | HumanForcePassEvent
   | HumanAmendPlanEvent
   | HumanAbortEvent
@@ -126,6 +141,9 @@ export function transition(state: State | InitialState, event: Event, context: R
     case "HUMAN":
       return transitionFromHuman(event, context, state);
     case "BUILD":
+      if (event.type === "WORKSPACE_CREATED" || event.type === "WORKSPACE_CLEANED") {
+        return ok("BUILD", context);
+      }
       if (event.type === "CODE_PRODUCED") {
         return ok("CHECK", context);
       }

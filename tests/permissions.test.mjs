@@ -32,6 +32,8 @@ async function tempStore() {
 
 test("event source guard allows only the R3 permission matrix", () => {
   assert.equal(validateEventSource("system", "TASK_RECEIVED").ok, true);
+  assert.equal(validateEventSource("system", "WORKSPACE_CREATED").ok, true);
+  assert.equal(validateEventSource("system", "WORKSPACE_CLEANED").ok, true);
   assert.equal(validateEventSource("planner", "CONTRACT_PRODUCED").ok, true);
   assert.equal(validateEventSource("reviewer", "REVIEW_COMPLETE").ok, true);
   assert.equal(validateEventSource("generator", "CODE_PRODUCED").ok, true);
@@ -49,6 +51,7 @@ test("event source guard denies unauthorized source/event pairs", () => {
     message: "planner is not authorized to emit EVAL_COMPLETE"
   });
   assert.equal(validateEventSource("generator", "CONTRACT_PRODUCED").ok, false);
+  assert.equal(validateEventSource("planner", "WORKSPACE_CREATED").ok, false);
   assert.equal(validateEventSource("evaluator", "CODE_PRODUCED").ok, false);
   assert.equal(validateEventSource("human", "TASK_RECEIVED").ok, false);
   assert.equal(validateEventSource("unknown", "TASK_RECEIVED").code, "UNKNOWN_ROLE");
