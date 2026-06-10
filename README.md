@@ -169,7 +169,7 @@ The `HUMAN` state serves two purposes — contract approval and escalation — d
 
 ### Event sourcing
 
-Every state transition is an **immutable event** persisted to SQLite. The current state is `events.reduce(transition, null)`.
+Every state transition is an **immutable event** persisted to the run store. The current state is `events.reduce(transition, null)`.
 
 - **Full audit trail**: know exactly why any decision was made
 - **Crash recovery**: replay events to restore state
@@ -655,7 +655,7 @@ Topics to discuss before implementation:
 
 ## Development
 
-Anchor is currently at R4: a TypeScript-first deterministic CLI MVP demo backed by the state machine core, event-sourced run store, and permission guard helpers.
+Anchor is currently at R5: a TypeScript-first deterministic CLI MVP backed by contract artifacts, human approval SHA events, the state machine core, event-sourced JSONL run store, and permission guard helpers.
 
 ```bash
 pnpm install
@@ -673,16 +673,38 @@ node dist/cli/index.js --help
 
 ### CLI Quickstart
 
-The CLI writes to `.anchor/runs.jsonl` by default. Set `ANCHOR_STORE_PATH` to use a temp or project-specific store.
+The CLI writes events to `.anchor/runs.jsonl` and contract artifacts to `.anchor/runs/<runId>/contract.yaml` by default. Set `ANCHOR_STORE_PATH` and `ANCHOR_RUNS_DIR` to use temp or project-specific locations.
 
 ```bash
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs pnpm anchor plan "Add login audit logging"
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs pnpm anchor contract <runId>
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs pnpm anchor approve <runId>
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs pnpm anchor status <runId>
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs pnpm anchor events <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor demo
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor demo --fixture retry
-ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor status <runId>
-ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor events <runId>
 ```
 
-CLI command output is stable JSON for `demo`, `status`, and `events`. `events` includes `seq`, `event_type`, `emitted_by`, `state_before`, and `state_after`.
+CLI command output is stable JSON for `plan`, `contract`, `approve`, `demo`, `status`, and `events`. `plan` creates a standard-mode contract and leaves the run in `HUMAN`. `approve` reads the contract artifact, computes its SHA-256, and appends `CONTRACT_APPROVED` by `human` with `contract_id` and `contract_sha`, moving the run to `BUILD`. `status` and `contract` report a dirty warning when the current artifact SHA differs from the approved SHA.
+
+`events` includes `seq`, `event_type`, `payload`, `emitted_by`, `state_before`, and `state_after`.
+
+### Contract Artifacts
+
+The R5 deterministic planner template writes YAML with:
+
+- `id`
+- `version`
+- `goal.summary`
+- `mode`
+- `steps`
+- `acceptance_criteria`
+- `files.allowlist`
+- `files.denylist`
+- `commands`
+- `non_goals`
+
+There is no LLM or provider call in R5. The contract artifact is generated from the task string and run id.
 
 ### State Machine Core
 
@@ -745,15 +767,15 @@ validateWorkspacePolicy({
 });
 ```
 
-The run store calls `validateEventSource` before transition evaluation and refuses unauthorized events without writing them. Workspace policy helpers are pure checks only; R4 does not implement a real filesystem sandbox or git diff enforcement.
+The run store calls `validateEventSource` before transition evaluation and refuses unauthorized events without writing them. Workspace policy helpers are pure checks only; R5 does not implement a real filesystem sandbox or git diff enforcement.
 
-R4 does not include provider adapters, real filesystem sandboxing, git diff enforcement, or Web UI.
+R5 does not include provider adapters, real filesystem sandboxing, git diff enforcement, or Web UI.
 
 ---
 
 ## Status
 
-**R4 TypeScript MVP baseline.** The deterministic CLI demo, TypeScript project skeleton, transition core, JSONL event-sourced run store, permission/source guards, workspace policy helpers, and test/build baseline are in place. Providers, adapters, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented yet.
+**R5 contract artifact flow.** Deterministic `plan`, `contract`, and `approve` commands are in place, with `.anchor/runs/<runId>/contract.yaml`, approved contract SHA events, status/contract dirty warnings, the deterministic CLI demo, TypeScript project skeleton, transition core, JSONL event-sourced run store, permission/source guards, workspace policy helpers, and test/build baseline. Providers, adapters, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented yet.
 
 ---
 

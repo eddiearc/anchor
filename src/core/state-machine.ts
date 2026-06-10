@@ -31,6 +31,7 @@ export type ReviewCompleteEvent = {
 export type ContractApprovedEvent = {
   type: "CONTRACT_APPROVED";
   contract_id: string;
+  contract_sha?: string;
 };
 
 export type HumanForcePassEvent = {
