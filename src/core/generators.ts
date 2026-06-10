@@ -4,24 +4,28 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { validateWorkspacePolicy, type PermissionResult } from "./permissions.js";
 import { getWorkspaceGitStatus, type WorkspaceMetadata } from "./workspaces.js";
+import {
+  type CommandRunner,
+  type CommandResult,
+  defaultCommandRunner,
+  runAgent,
+  buildCodexArgv,
+  codexCommand,
+  isCommandUnavailable,
+  summarizeOutput,
+  redactCodexArgv
+} from "./agent-runner.js";
+import { composePrompt, type AnchorConfig } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 
 export type GeneratorAdapter = "fixture" | "codex";
 export type FixtureVariant = "allowed" | "outside";
 
-export type CommandResult = {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-};
-
-export type CommandRunner = (command: string, args: string[], options: { cwd: string }) => Promise<CommandResult>;
-
 export type GeneratorReport = {
   adapter: GeneratorAdapter;
   fixture?: FixtureVariant;
-  runId: string;
+  taskId: string;
   attempt: number;
   startedAt: string;
   finishedAt: string;
@@ -60,17 +64,21 @@ export type GeneratorError = {
 };
 
 export type RunGeneratorInput = {
-  runId: string;
-  runsDir: string;
+  taskId: string;
+  artifactsDir: string;
   workspace: WorkspaceMetadata;
   contract: string;
   adapter: string;
   fixture?: string;
   attempt: number;
   reportPath?: string;
+  config?: AnchorConfig;
 };
 
-export async function runGenerator(input: RunGeneratorInput, runner: CommandRunner = defaultCommandRunner): Promise<GeneratorOk | GeneratorError> {
+export async function runGenerator(
+  input: RunGeneratorInput,
+  runner: CommandRunner = defaultCommandRunner
+): Promise<GeneratorOk | GeneratorError> {
   if (input.adapter === "fixture") {
     return runFixtureGenerator(input);
   }
@@ -104,7 +112,7 @@ export async function runFixtureGenerator(input: RunGeneratorInput): Promise<Gen
   }
 
   const startedAt = new Date().toISOString();
-  await writeFixtureOutput(input.workspace.worktreePath, input.runId, fixture);
+  await writeFixtureOutput(input.workspace.worktreePath, input.taskId, fixture);
   const changedFiles = (await getWorkspaceGitStatus(input.workspace.worktreePath)).changedFiles;
   const contractPolicy = readContractPolicy(input.contract);
   const policyResult = validateWorkspacePolicy({
@@ -117,7 +125,7 @@ export async function runFixtureGenerator(input: RunGeneratorInput): Promise<Gen
   const report: GeneratorReport = {
     adapter: "fixture",
     fixture,
-    runId: input.runId,
+    taskId: input.taskId,
     attempt: input.attempt,
     startedAt,
     finishedAt,
@@ -129,7 +137,7 @@ export async function runFixtureGenerator(input: RunGeneratorInput): Promise<Gen
         ? `Fixture generator wrote ${changedFiles.length} changed file(s) for attempt ${input.attempt}.`
         : `Fixture generator produced policy-violating changes for attempt ${input.attempt}.`
   };
-  const reportPath = await writeGeneratorReport(input.runsDir, input.runId, report, input.reportPath);
+  const reportPath = await writeGeneratorReport(input.artifactsDir, input.taskId, report, input.reportPath);
 
   if (!policyResult.ok) {
     return {
@@ -149,7 +157,10 @@ export async function runFixtureGenerator(input: RunGeneratorInput): Promise<Gen
   };
 }
 
-async function runCodexGenerator(input: RunGeneratorInput, runner: CommandRunner): Promise<GeneratorOk | GeneratorError> {
+async function runCodexGenerator(
+  input: RunGeneratorInput,
+  runner: CommandRunner
+): Promise<GeneratorOk | GeneratorError> {
   const status = await getWorkspaceGitStatus(input.workspace.worktreePath);
   if (!status.pathExists || !status.isGitWorktree || input.workspace.cleanedAt) {
     return {
@@ -159,14 +170,15 @@ async function runCodexGenerator(input: RunGeneratorInput, runner: CommandRunner
     };
   }
 
-  const command = process.env.ANCHOR_CODEX_COMMAND ?? "codex";
-  const argv = readCodexArgv(input);
+  const command = codexCommand();
+  const prompt = buildGeneratorPrompt(input);
+  const argv = buildCodexArgv(input.workspace.worktreePath, prompt);
   const startedAt = new Date().toISOString();
+
   let result: CommandResult;
   try {
-    result = await runner(command, argv, { cwd: input.workspace.worktreePath });
+    result = await runAgent(command, argv, input.workspace.worktreePath, runner);
   } catch (error) {
-    const finishedAt = new Date().toISOString();
     if (isCommandUnavailable(error)) {
       return {
         ok: false,
@@ -175,21 +187,7 @@ async function runCodexGenerator(input: RunGeneratorInput, runner: CommandRunner
         detail: error instanceof Error ? error.message : String(error)
       };
     }
-    result = {
-      exitCode: readExitCode(error),
-      stdout: readProcessOutput(error, "stdout"),
-      stderr: readProcessOutput(error, "stderr") || (error instanceof Error ? error.message : String(error))
-    };
-    return writeCodexFailureReport({
-      input,
-      command,
-      argv,
-      startedAt,
-      finishedAt,
-      result,
-      code: "CODEX_COMMAND_FAILED",
-      message: `Codex generator exited with code ${result.exitCode}.`
-    });
+    throw error;
   }
 
   const changedFiles = (await getWorkspaceGitStatus(input.workspace.worktreePath)).changedFiles;
@@ -203,7 +201,7 @@ async function runCodexGenerator(input: RunGeneratorInput, runner: CommandRunner
   const finishedAt = new Date().toISOString();
   const report: GeneratorReport = {
     adapter: "codex",
-    runId: input.runId,
+    taskId: input.taskId,
     attempt: input.attempt,
     startedAt,
     finishedAt,
@@ -217,7 +215,7 @@ async function runCodexGenerator(input: RunGeneratorInput, runner: CommandRunner
     commitSha: await currentHead(input.workspace.worktreePath),
     summary: codexSummary(input.attempt, changedFiles, policyResult, result.exitCode)
   };
-  const reportPath = await writeGeneratorReport(input.runsDir, input.runId, report, input.reportPath);
+  const reportPath = await writeGeneratorReport(input.artifactsDir, input.taskId, report, input.reportPath);
 
   if (result.exitCode !== 0) {
     return {
@@ -257,107 +255,11 @@ async function runCodexGenerator(input: RunGeneratorInput, runner: CommandRunner
   };
 }
 
-async function writeCodexFailureReport(input: {
-  input: RunGeneratorInput;
-  command: string;
-  argv: string[];
-  startedAt: string;
-  finishedAt: string;
-  result: CommandResult;
-  code: "CODEX_COMMAND_FAILED";
-  message: string;
-}): Promise<GeneratorError> {
-  const status = await getWorkspaceGitStatus(input.input.workspace.worktreePath);
-  const report: GeneratorReport = {
-    adapter: "codex",
-    runId: input.input.runId,
-    attempt: input.input.attempt,
-    startedAt: input.startedAt,
-    finishedAt: input.finishedAt,
-    command: input.command,
-    argv: redactCodexArgv(input.argv),
-    exitCode: input.result.exitCode,
-    stdoutSummary: summarizeOutput(input.result.stdout),
-    stderrSummary: summarizeOutput(input.result.stderr),
-    filesChanged: status.changedFiles,
-    policyResult: { ok: true },
-    commitSha: await currentHead(input.input.workspace.worktreePath),
-    summary: input.message
-  };
-  const reportPath = await writeGeneratorReport(input.input.runsDir, input.input.runId, report, input.input.reportPath);
-  return {
-    ok: false,
-    code: input.code,
-    message: input.message,
-    report,
-    reportPath
-  };
-}
-
-export async function writeGeneratorReport(runsDir: string, runId: string, report: GeneratorReport, targetPath?: string) {
-  const reportPath = targetPath ?? generatorReportPath(runsDir, runId);
-  await mkdir(path.dirname(reportPath), { recursive: true });
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-  return reportPath;
-}
-
-export function generatorReportPath(runsDir: string, runId: string) {
-  return path.join(runsDir, runId, "generator-report.json");
-}
-
-export function generatorAttemptReportPath(runsDir: string, runId: string, attempt: number) {
-  return path.join(runsDir, runId, "attempts", String(attempt), "generator-report.json");
-}
-
-export function readContractPolicy(contract: string) {
-  return {
-    allowlist: readYamlList(contract, "allowlist"),
-    denylist: readYamlList(contract, "denylist")
-  };
-}
-
-async function writeFixtureOutput(worktreePath: string, runId: string, fixture: FixtureVariant) {
-  const relativePath = fixture === "allowed" ? path.join("anchor-output", `${runId}.txt`) : path.join("outside-output", `${runId}.txt`);
-  const outputPath = path.join(worktreePath, relativePath);
-  await mkdir(path.dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, [`runId=${runId}`, `fixture=${fixture}`, "adapter=fixture", ""].join("\n"));
-}
-
-async function defaultCommandRunner(command: string, args: string[], options: { cwd: string }): Promise<CommandResult> {
-  const { stdout, stderr } = await execFileAsync(command, args, {
-    cwd: options.cwd,
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024
-  });
-  return { exitCode: 0, stdout, stderr };
-}
-
-function readCodexArgv(input: RunGeneratorInput) {
-  const customArgv = process.env.ANCHOR_CODEX_ARGV_JSON;
-  if (customArgv) {
-    const parsed = JSON.parse(customArgv);
-    if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
-      throw new Error("ANCHOR_CODEX_ARGV_JSON must be a JSON string array.");
-    }
-    return [...parsed, buildCodexPrompt(input)];
-  }
-  return [
-    "exec",
-    "--cd",
-    input.workspace.worktreePath,
-    "--sandbox",
-    "workspace-write",
-    "--ask-for-approval",
-    "never",
-    buildCodexPrompt(input)
-  ];
-}
-
-function buildCodexPrompt(input: RunGeneratorInput) {
+function buildGeneratorPrompt(input: RunGeneratorInput): string {
   const policy = readContractPolicy(input.contract);
-  return [
+  const base = [
     "You are the Generator role inside Anchor.",
-    `Run ID: ${input.runId}`,
+    `Task ID: ${input.taskId}`,
     `Worktree path: ${input.workspace.worktreePath}`,
     "",
     "Approved contract:",
@@ -372,18 +274,90 @@ function buildCodexPrompt(input: RunGeneratorInput) {
     "- Do not approve, evaluate, merge, commit, or push.",
     "- Implement only the approved contract and leave validation to Anchor."
   ].join("\n");
+
+  return composePrompt(input.config, "generator_prompt", base);
 }
 
-function redactCodexArgv(argv: string[]) {
-  return argv.map((arg, index) => (index === argv.length - 1 ? "[prompt redacted]" : arg));
+async function writeCodexFailureReport(params: {
+  input: RunGeneratorInput;
+  command: string;
+  argv: string[];
+  startedAt: string;
+  finishedAt: string;
+  result: CommandResult;
+  code: "CODEX_COMMAND_FAILED";
+  message: string;
+}): Promise<GeneratorError> {
+  const status = await getWorkspaceGitStatus(params.input.workspace.worktreePath);
+  const report: GeneratorReport = {
+    adapter: "codex",
+    taskId: params.input.taskId,
+    attempt: params.input.attempt,
+    startedAt: params.startedAt,
+    finishedAt: params.finishedAt,
+    command: params.command,
+    argv: redactCodexArgv(params.argv),
+    exitCode: params.result.exitCode,
+    stdoutSummary: summarizeOutput(params.result.stdout),
+    stderrSummary: summarizeOutput(params.result.stderr),
+    filesChanged: status.changedFiles,
+    policyResult: { ok: true },
+    commitSha: await currentHead(params.input.workspace.worktreePath),
+    summary: params.message
+  };
+  const reportPath = await writeGeneratorReport(params.input.artifactsDir, params.input.taskId, report, params.input.reportPath);
+  return {
+    ok: false,
+    code: params.code,
+    message: params.message,
+    report,
+    reportPath
+  };
 }
 
-function summarizeOutput(output: string) {
-  const normalized = output.trim().replace(/\s+/g, " ");
-  return normalized.length > 1000 ? `${normalized.slice(0, 1000)}...` : normalized;
+export async function writeGeneratorReport(
+  artifactsDir: string,
+  taskId: string,
+  report: GeneratorReport,
+  targetPath?: string
+) {
+  const reportPath = targetPath ?? generatorReportPath(artifactsDir, taskId);
+  await mkdir(path.dirname(reportPath), { recursive: true });
+  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  return reportPath;
 }
 
-function codexSummary(attempt: number, changedFiles: string[], policyResult: PermissionResult, exitCode: number) {
+export function generatorReportPath(artifactsDir: string, taskId: string) {
+  return path.join(artifactsDir, taskId, "generator-report.json");
+}
+
+export function generatorAttemptReportPath(artifactsDir: string, taskId: string, attempt: number) {
+  return path.join(artifactsDir, taskId, "attempts", String(attempt), "generator-report.json");
+}
+
+export function readContractPolicy(contract: string) {
+  return {
+    allowlist: readYamlList(contract, "allowlist"),
+    denylist: readYamlList(contract, "denylist")
+  };
+}
+
+async function writeFixtureOutput(worktreePath: string, taskId: string, fixture: FixtureVariant) {
+  const relativePath =
+    fixture === "allowed"
+      ? path.join("anchor-output", `${taskId}.txt`)
+      : path.join("outside-output", `${taskId}.txt`);
+  const outputPath = path.join(worktreePath, relativePath);
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  await writeFile(outputPath, [`taskId=${taskId}`, `fixture=${fixture}`, "adapter=fixture", ""].join("\n"));
+}
+
+function codexSummary(
+  attempt: number,
+  changedFiles: string[],
+  policyResult: PermissionResult,
+  exitCode: number
+): string {
   if (exitCode !== 0) {
     return `Codex generator failed for attempt ${attempt}.`;
   }
@@ -395,36 +369,11 @@ function codexSummary(attempt: number, changedFiles: string[], policyResult: Per
     : `Codex generator produced policy-violating changes for attempt ${attempt}.`;
 }
 
-function isCommandUnavailable(error: unknown) {
-  if (typeof error !== "object" || error === null) {
-    return false;
-  }
-  return (error as Record<string, unknown>).code === "ENOENT";
-}
-
-function readExitCode(error: unknown) {
-  if (typeof error === "object" && error !== null) {
-    const code = (error as Record<string, unknown>).code;
-    if (typeof code === "number") {
-      return code;
-    }
-  }
-  return 1;
-}
-
-function readProcessOutput(error: unknown, key: "stdout" | "stderr") {
-  if (typeof error === "object" && error !== null) {
-    const record = error as Record<string, unknown>;
-    if (typeof record[key] === "string") {
-      return record[key];
-    }
-  }
-  return "";
-}
-
 async function currentHead(worktreePath: string) {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", worktreePath, "rev-parse", "HEAD"], { encoding: "utf8" });
+    const { stdout } = await execFileAsync("git", ["-C", worktreePath, "rev-parse", "HEAD"], {
+      encoding: "utf8"
+    });
     return stdout.trim();
   } catch {
     return null;
@@ -435,23 +384,17 @@ function readFixtureVariant(fixture: string | undefined): FixtureVariant {
   return fixture === "outside" ? "outside" : "allowed";
 }
 
-function readYamlList(contract: string, key: "allowlist" | "denylist") {
+function readYamlList(contract: string, key: "allowlist" | "denylist"): string[] {
   const lines = contract.split("\n");
   const keyLine = lines.findIndex((line) => line.trim() === `${key}:`);
-  if (keyLine === -1) {
-    return [];
-  }
+  if (keyLine === -1) return [];
 
   const keyIndent = indentOf(lines[keyLine]);
   const values: string[] = [];
   for (const line of lines.slice(keyLine + 1)) {
-    if (line.trim() && indentOf(line) <= keyIndent) {
-      break;
-    }
+    if (line.trim() && indentOf(line) <= keyIndent) break;
     const match = /^\s*-\s*(.+?)\s*$/.exec(line);
-    if (match) {
-      values.push(unquote(match[1]));
-    }
+    if (match) values.push(unquote(match[1]));
   }
   return values;
 }

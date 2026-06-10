@@ -45,7 +45,7 @@ test("Anchor CLI still prints help and version", async () => {
   assert.equal((await runCli(["--version"])).output, "0.0.0");
 });
 
-test("TASK_RECEIVED starts the run in PLAN", () => {
+test("TASK_RECEIVED starts the task in PLAN", () => {
   assert.deepEqual(transition(null, taskReceived, context()), {
     ok: true,
     state: "PLAN",

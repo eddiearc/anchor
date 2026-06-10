@@ -26,9 +26,9 @@ export type ContractFile = {
   contractId: string;
 };
 
-export function createTemplateContract(task: string, runId: string): ContractArtifact {
+export function createTemplateContract(task: string, taskId: string): ContractArtifact {
   return {
-    id: contractIdForRun(runId),
+    id: contractIdForTask(taskId),
     version: 1,
     goal: {
       summary: task
@@ -60,8 +60,8 @@ export function createTemplateContract(task: string, runId: string): ContractArt
   };
 }
 
-export async function writeContractArtifact(runsDir: string, runId: string, contract: ContractArtifact): Promise<ContractFile> {
-  const artifactPath = contractPathForRun(runsDir, runId);
+export async function writeContractArtifact(artifactsDir: string, taskId: string, contract: ContractArtifact): Promise<ContractFile> {
+  const artifactPath = contractPathForTask(artifactsDir, taskId);
   const content = serializeContract(contract);
   await mkdir(path.dirname(artifactPath), { recursive: true });
   await writeFile(artifactPath, content);
@@ -73,15 +73,15 @@ export async function writeContractArtifact(runsDir: string, runId: string, cont
   };
 }
 
-export async function readContractArtifact(runsDir: string, runId: string): Promise<ContractFile | null> {
-  const artifactPath = contractPathForRun(runsDir, runId);
+export async function readContractArtifact(artifactsDir: string, taskId: string): Promise<ContractFile | null> {
+  const artifactPath = contractPathForTask(artifactsDir, taskId);
   try {
     const content = await readFile(artifactPath, "utf8");
     return {
       path: artifactPath,
       content,
       sha: sha256(content),
-      contractId: extractContractId(content) ?? contractIdForRun(runId)
+      contractId: extractContractId(content) ?? contractIdForTask(taskId)
     };
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
@@ -91,12 +91,12 @@ export async function readContractArtifact(runsDir: string, runId: string): Prom
   }
 }
 
-export function contractPathForRun(runsDir: string, runId: string): string {
-  return path.join(runsDir, runId, "contract.yaml");
+export function contractPathForTask(artifactsDir: string, taskId: string): string {
+  return path.join(artifactsDir, taskId, "contract.yaml");
 }
 
-export function contractIdForRun(runId: string): string {
-  return `contract_${runId}`;
+export function contractIdForTask(taskId: string): string {
+  return `contract_${taskId}`;
 }
 
 export function serializeContract(contract: ContractArtifact): string {

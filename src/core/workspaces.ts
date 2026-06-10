@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -6,7 +7,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 export type WorkspaceMetadata = {
-  runId: string;
+  taskId: string;
   baseCommit: string;
   branch: string;
   worktreePath: string;
@@ -54,13 +55,13 @@ export type WorkspaceError = {
 };
 
 export async function createGitWorkspace(input: {
-  runsDir: string;
+  artifactsDir: string;
   worktreesDir: string;
-  runId: string;
+  taskId: string;
   contractSha: string;
   timestamp?: string;
 }): Promise<WorkspaceCreateResult> {
-  const existing = await readWorkspaceMetadata(input.runsDir, input.runId);
+  const existing = await readWorkspaceMetadata(input.artifactsDir, input.taskId);
   if (existing) {
     return {
       ok: true,
@@ -82,8 +83,8 @@ export async function createGitWorkspace(input: {
     return baseCommit;
   }
 
-  const safeRunId = sanitizeRunId(input.runId);
-  const worktreePath = path.resolve(input.worktreesDir, safeRunId);
+  const safeTaskId = sanitizeTaskId(input.taskId);
+  const worktreePath = path.resolve(input.worktreesDir, safeTaskId);
   if (await pathExists(worktreePath)) {
     return {
       ok: false,
@@ -93,9 +94,9 @@ export async function createGitWorkspace(input: {
   }
 
   const metadata: WorkspaceMetadata = {
-    runId: input.runId,
+    taskId: input.taskId,
     baseCommit: baseCommit.stdout,
-    branch: `anchor/${safeRunId}`,
+    branch: `anchor/${safeTaskId}-${randomUUID().slice(0, 8)}`,
     worktreePath,
     createdAt: input.timestamp ?? new Date().toISOString(),
     contractSha: input.contractSha
@@ -107,7 +108,7 @@ export async function createGitWorkspace(input: {
     return add;
   }
 
-  await writeWorkspaceMetadata(input.runsDir, input.runId, metadata);
+  await writeWorkspaceMetadata(input.artifactsDir, input.taskId, metadata);
   return {
     ok: true,
     created: true,
@@ -117,16 +118,16 @@ export async function createGitWorkspace(input: {
 }
 
 export async function cleanupGitWorkspace(input: {
-  runsDir: string;
-  runId: string;
+  artifactsDir: string;
+  taskId: string;
   timestamp?: string;
 }): Promise<WorkspaceCleanupResult> {
-  const metadata = await readWorkspaceMetadata(input.runsDir, input.runId);
+  const metadata = await readWorkspaceMetadata(input.artifactsDir, input.taskId);
   if (!metadata) {
     return {
       ok: false,
       code: "WORKSPACE_NOT_FOUND",
-      message: `Workspace metadata not found for run: ${input.runId}`
+      message: `Workspace metadata not found for task: ${input.taskId}`
     };
   }
 
@@ -150,7 +151,7 @@ export async function cleanupGitWorkspace(input: {
     ...metadata,
     cleanedAt: input.timestamp ?? new Date().toISOString()
   };
-  await writeWorkspaceMetadata(input.runsDir, input.runId, cleaned);
+  await writeWorkspaceMetadata(input.artifactsDir, input.taskId, cleaned);
   return {
     ok: true,
     cleaned: true,
@@ -159,8 +160,8 @@ export async function cleanupGitWorkspace(input: {
   };
 }
 
-export async function readWorkspaceStatus(runsDir: string, runId: string) {
-  const metadata = await readWorkspaceMetadata(runsDir, runId);
+export async function readWorkspaceStatus(artifactsDir: string, taskId: string) {
+  const metadata = await readWorkspaceMetadata(artifactsDir, taskId);
   if (!metadata) {
     return null;
   }
@@ -171,16 +172,16 @@ export async function readWorkspaceStatus(runsDir: string, runId: string) {
   };
 }
 
-export async function readWorkspaceMetadata(runsDir: string, runId: string): Promise<WorkspaceMetadata | null> {
+export async function readWorkspaceMetadata(artifactsDir: string, taskId: string): Promise<WorkspaceMetadata | null> {
   try {
-    const raw = await readFile(workspaceMetadataPath(runsDir, runId), "utf8");
+    const raw = await readFile(workspaceMetadataPath(artifactsDir, taskId), "utf8");
     return JSON.parse(raw) as WorkspaceMetadata;
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return null;
     }
     if (error instanceof SyntaxError) {
-      throw Object.assign(new Error(`Invalid workspace metadata for run: ${runId}`), {
+      throw Object.assign(new Error(`Invalid workspace metadata for task: ${taskId}`), {
         code: "WORKSPACE_METADATA_INVALID"
       });
     }
@@ -188,18 +189,18 @@ export async function readWorkspaceMetadata(runsDir: string, runId: string): Pro
   }
 }
 
-export async function writeWorkspaceMetadata(runsDir: string, runId: string, metadata: WorkspaceMetadata) {
-  const filePath = workspaceMetadataPath(runsDir, runId);
+export async function writeWorkspaceMetadata(artifactsDir: string, taskId: string, metadata: WorkspaceMetadata) {
+  const filePath = workspaceMetadataPath(artifactsDir, taskId);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(metadata, null, 2)}\n`);
 }
 
-export function workspaceMetadataPath(runsDir: string, runId: string): string {
-  return path.join(runsDir, runId, "workspace.json");
+export function workspaceMetadataPath(artifactsDir: string, taskId: string): string {
+  return path.join(artifactsDir, taskId, "workspace.json");
 }
 
-export function sanitizeRunId(runId: string): string {
-  return runId.replace(/[^A-Za-z0-9._-]/g, "-");
+export function sanitizeTaskId(taskId: string): string {
+  return taskId.replace(/[^A-Za-z0-9._-]/g, "-");
 }
 
 export async function getWorkspaceGitStatus(worktreePath: string): Promise<WorkspaceGitStatus> {

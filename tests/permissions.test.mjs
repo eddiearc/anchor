@@ -59,21 +59,21 @@ test("event source guard denies unauthorized source/event pairs", () => {
 
 test("store append rejects unauthorized emittedBy before transition and does not consume seq", async () => {
   const store = await tempStore();
-  await store.createRun("Unauthorized source", { id: "run_source_guard" });
+  await store.appendEvent("TASK-001", { type: "TASK_RECEIVED", task: "Guard test" }, "system");
 
-  const unauthorized = await store.appendEvent("run_source_guard", pass, "planner");
+  const unauthorized = await store.appendEvent("TASK-001", pass, "planner");
   assert.equal(unauthorized.ok, false);
   assert.equal(unauthorized.code, "UNAUTHORIZED_EVENT_SOURCE");
 
-  let events = await store.listEvents("run_source_guard");
+  let events = await store.listEvents("TASK-001");
   assert.equal(events.length, 1);
   assert.equal(events[0].seq, 1);
 
-  const legal = await store.appendEvent("run_source_guard", quickContract, "planner");
+  const legal = await store.appendEvent("TASK-001", quickContract, "planner");
   assert.equal(legal.ok, true);
   assert.equal(legal.event.seq, 2);
 
-  events = await store.listEvents("run_source_guard");
+  events = await store.listEvents("TASK-001");
   assert.deepEqual(
     events.map((event) => [event.seq, event.event_type, event.emitted_by]),
     [
@@ -85,13 +85,13 @@ test("store append rejects unauthorized emittedBy before transition and does not
 
 test("legal source quick path still appends and reaches DONE", async () => {
   const store = await tempStore();
-  await store.createRun("Authorized path", { id: "run_authorized" });
+  await store.appendEvent("TASK-002", { type: "TASK_RECEIVED", task: "Auth path" }, "system");
 
-  assert.equal((await store.appendEvent("run_authorized", quickContract, "planner")).ok, true);
-  assert.equal((await store.appendEvent("run_authorized", codeProduced, "generator")).ok, true);
-  assert.equal((await store.appendEvent("run_authorized", pass, "evaluator")).ok, true);
+  assert.equal((await store.appendEvent("TASK-002", quickContract, "planner")).ok, true);
+  assert.equal((await store.appendEvent("TASK-002", codeProduced, "generator")).ok, true);
+  assert.equal((await store.appendEvent("TASK-002", pass, "evaluator")).ok, true);
 
-  assert.equal((await store.getCurrentState("run_authorized")).state, "DONE");
+  assert.equal((await store.getCurrentState("TASK-002")).state, "DONE");
 });
 
 test("workspace guard allows generator files inside allowlist and outside denylist", () => {

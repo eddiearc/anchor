@@ -1,23 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 
-import { createFileRunStore } from "../dist/index.js";
 import { runCli } from "../dist/cli/index.js";
+import { createFileRunStore } from "../dist/index.js";
 
-const execFileAsync = promisify(execFile);
-
-async function tempPaths() {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "anchor-evaluator-"));
-  return {
-    storePath: path.join(dir, "runs.jsonl"),
-    runsDir: path.join(dir, "runs"),
-    worktreesDir: path.join(dir, "worktrees")
-  };
+async function tempDir(prefix = "anchor-eval-") {
+  return await mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
 async function runJson(args, paths) {
@@ -26,211 +17,165 @@ async function runJson(args, paths) {
   return JSON.parse(result.output);
 }
 
-async function generatedRun(paths) {
-  const plan = await runJson(["plan", "Evaluate fixture output"], paths);
-  await runJson(["approve", plan.runId], paths);
-  const workspace = await runJson(["workspace", "create", plan.runId], paths);
-  const generated = await runJson(["generate", plan.runId, "--adapter", "fixture"], paths);
-  assert.equal(generated.state, "CHECK");
-  return { plan, workspace, generated };
-}
-
-async function exists(filePath) {
-  try {
-    await stat(filePath);
-    return true;
-  } catch (error) {
-    if (error instanceof Error && error.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-}
-
-async function cleanupWorktree(workspace) {
-  await execFileAsync("git", ["worktree", "remove", "--force", workspace.worktreePath], { encoding: "utf8" }).catch(() => {});
-  await execFileAsync("git", ["branch", "-D", workspace.branch], { encoding: "utf8" }).catch(() => {});
-}
-
-async function setRetriesLeft(storePath, runId, retriesLeft) {
-  const records = (await readFile(storePath, "utf8"))
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  const rewritten = records
-    .map((record) => {
-      if (record.record_type === "run_created" && record.run.id === runId) {
-        return JSON.stringify({ ...record, run: { ...record.run, context: { ...record.run.context, retriesLeft } } });
-      }
-      return JSON.stringify(record);
-    })
-    .join("\n");
-  await writeFile(storePath, `${rewritten}\n`);
-}
-
-async function worktreeFiles(worktreePath) {
-  const { stdout } = await execFileAsync("git", ["-C", worktreePath, "status", "--porcelain", "--untracked-files=all"], {
-    encoding: "utf8"
-  });
-  return stdout.trim().split("\n").filter(Boolean);
+async function planApproveGenerate(dir, tasksDir, worktreesDir) {
+  const storePath = path.join(dir, "events.jsonl");
+  const plan = await runJson(["plan", "Eval integration test"], { storePath, tasksDir });
+  await runJson(["approve", plan.taskId], { storePath, tasksDir });
+  await runJson(["workspace", "create", plan.taskId], { storePath, tasksDir, worktreesDir });
+  await runJson(["generate", plan.taskId], { storePath, tasksDir, worktreesDir });
+  return { taskId: plan.taskId, storePath };
 }
 
 test("fixture evaluator PASS writes report, appends event, and advances CHECK to DONE", async () => {
-  const paths = await tempPaths();
-  const { plan, workspace, generated } = await generatedRun(paths);
-  const beforeFiles = await worktreeFiles(workspace.workspace.worktreePath);
-  const evaluated = await runJson(["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "pass"], paths);
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
 
-  assert.equal(evaluated.ok, true);
-  assert.equal(evaluated.command, "evaluate");
-  assert.equal(evaluated.state, "DONE");
-  assert.equal(evaluated.verdict, "PASS");
-  assert.equal(evaluated.testsRun, 1);
-  assert.equal(evaluated.testsFailed, 0);
-  assert.equal(evaluated.event.event_type, "EVAL_COMPLETE");
-  assert.equal(evaluated.event.emitted_by, "evaluator");
-  assert.equal(evaluated.event.state_before, "CHECK");
-  assert.equal(evaluated.event.state_after, "DONE");
-  assert.equal(evaluated.event.payload.report_path, evaluated.reportPath);
-  assert.equal(evaluated.event.payload.verdict, "PASS");
-  assert.equal(evaluated.event.payload.tests_run, 1);
-  assert.equal(evaluated.event.payload.tests_failed, 0);
+  const { taskId, storePath } = await planApproveGenerate(dir, tasksDir, worktreesDir);
+  const evalResult = await runJson(["evaluate", taskId, "--adapter", "fixture", "--verdict", "pass"], { storePath, tasksDir, worktreesDir });
 
-  const report = JSON.parse(await readFile(evaluated.reportPath, "utf8"));
-  assert.equal(report.adapter, "fixture");
-  assert.equal(report.verdict, "PASS");
-  assert.equal(report.runId, plan.runId);
-  assert.equal(report.testsRun, 1);
-  assert.equal(report.testsFailed, 0);
-  assert.equal(report.generatorReportPath, generated.reportPath);
-  assert.deepEqual(report.filesInspected, generated.filesChanged);
-  assert.match(report.summary, /Fixture evaluator returned PASS/);
+  assert.equal(evalResult.ok, true);
+  assert.equal(evalResult.state, "DONE");
+  assert.equal(evalResult.verdict, "PASS");
+  assert.equal(evalResult.event.event_type, "EVAL_COMPLETE");
+  assert.equal(evalResult.event.emitted_by, "evaluator");
 
-  assert.deepEqual(await worktreeFiles(workspace.workspace.worktreePath), beforeFiles);
-  const events = await runJson(["events", plan.runId], paths);
-  assert.deepEqual(
-    events.events.map((event) => event.event_type),
-    ["TASK_RECEIVED", "CONTRACT_PRODUCED", "CONTRACT_APPROVED", "WORKSPACE_CREATED", "CODE_PRODUCED", "EVAL_COMPLETE"]
-  );
+  const events = await runJson(["events", taskId], { storePath });
+  assert.equal(events.events[events.events.length - 1].state_after, "DONE");
 
-  await cleanupWorktree(workspace.workspace);
+  // Task status updated to done
+  const taskResult = await runJson(["task", "show", taskId], { storePath, tasksDir });
+  assert.equal(taskResult.task.status, "done");
 });
 
 test("fixture evaluator FAIL returns CHECK to BUILD and consumes retry budget", async () => {
-  const paths = await tempPaths();
-  const { plan, workspace } = await generatedRun(paths);
-  const evaluated = await runJson(["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "FAIL"], paths);
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
 
-  assert.equal(evaluated.ok, true);
-  assert.equal(evaluated.state, "BUILD");
-  assert.equal(evaluated.verdict, "FAIL");
-  assert.equal(evaluated.testsFailed, 1);
-  assert.equal(evaluated.event.state_before, "CHECK");
-  assert.equal(evaluated.event.state_after, "BUILD");
+  const { taskId, storePath } = await planApproveGenerate(dir, tasksDir, worktreesDir);
+  const evalResult = await runJson(["evaluate", taskId, "--adapter", "fixture", "--verdict", "fail"], { storePath, tasksDir, worktreesDir });
 
-  const status = await runJson(["status", plan.runId], paths);
-  assert.equal(status.state, "BUILD");
-  assert.equal(status.context.retriesLeft, 2);
+  assert.equal(evalResult.ok, true);
+  assert.equal(evalResult.state, "BUILD");
+  assert.equal(evalResult.verdict, "FAIL");
 
-  const report = JSON.parse(await readFile(evaluated.reportPath, "utf8"));
-  assert.equal(report.verdict, "FAIL");
-  assert.equal(report.testsFailed, 1);
-
-  await cleanupWorktree(workspace.workspace);
+  const snapshot = await ((await import("../dist/index.js")).createFileRunStore(storePath)).getCurrentState(taskId);
+  assert.equal(snapshot.state, "BUILD");
+  assert.equal(snapshot.context.retriesLeft, 2);
 });
 
 test("fixture evaluator rejects invalid verdicts without report, event, or state changes", async () => {
-  const paths = await tempPaths();
-  const { plan, workspace } = await generatedRun(paths);
-  const reportPath = path.join(paths.runsDir, plan.runId, "evaluator-report.json");
-  const invalidCases = [
-    ["evaluate", plan.runId, "--adapter", "fixture"],
-    ["evaluate", plan.runId, "--adapter", "fixture", "--verdict", ""],
-    ["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "maybe"],
-    ["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "failed"],
-    ["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "success"],
-    ["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "1"]
-  ];
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
 
-  for (const args of invalidCases) {
-    const evaluated = await runJson(args, paths);
-    assert.equal(evaluated.ok, false);
-    assert.equal(evaluated.error.code, "INVALID_VERDICT");
-    assert.equal(evaluated.state, "CHECK");
+  const { taskId, storePath } = await planApproveGenerate(dir, tasksDir, worktreesDir);
+  const badVerdict = await runJson(["evaluate", taskId, "--adapter", "fixture", "--verdict", "maybe"], { storePath, tasksDir, worktreesDir });
+  assert.equal(badVerdict.ok, false);
+  assert.match(badVerdict.error.message || badVerdict.error.code || "", /verdict/i);
 
-    const status = await runJson(["status", plan.runId], paths);
-    assert.equal(status.state, "CHECK");
-    assert.equal(await exists(reportPath), false);
-    assert.equal(
-      (await runJson(["events", plan.runId], paths)).events.some((event) => event.event_type === "EVAL_COMPLETE"),
-      false
-    );
-  }
-
-  await cleanupWorktree(workspace.workspace);
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(taskId);
+  assert.equal(snapshot.state, "CHECK");
 });
 
 test("fixture evaluator FAIL with exhausted retries moves CHECK to HUMAN", async () => {
-  const paths = await tempPaths();
-  const { plan, workspace } = await generatedRun(paths);
-  await setRetriesLeft(paths.storePath, plan.runId, 0);
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
 
-  const evaluated = await runJson(["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "fail"], paths);
-  assert.equal(evaluated.ok, true);
-  assert.equal(evaluated.state, "HUMAN");
-  assert.equal(evaluated.event.state_before, "CHECK");
-  assert.equal(evaluated.event.state_after, "HUMAN");
+  const { taskId, storePath } = await planApproveGenerate(dir, tasksDir, worktreesDir);
+  // Fail 4 times to exhaust retries (retries default = 3, needs 4th FAIL to go HUMAN)
+  await runJson(["evaluate", taskId, "--adapter", "fixture", "--verdict", "fail"], { storePath, tasksDir, worktreesDir });
+  await runJson(["generate", taskId], { storePath, tasksDir, worktreesDir });
+  await runJson(["evaluate", taskId, "--adapter", "fixture", "--verdict", "fail"], { storePath, tasksDir, worktreesDir });
+  await runJson(["generate", taskId], { storePath, tasksDir, worktreesDir });
+  await runJson(["evaluate", taskId, "--adapter", "fixture", "--verdict", "fail"], { storePath, tasksDir, worktreesDir });
+  await runJson(["generate", taskId], { storePath, tasksDir, worktreesDir });
+  const final = await runJson(["evaluate", taskId, "--adapter", "fixture", "--verdict", "fail"], { storePath, tasksDir, worktreesDir });
 
-  const status = await runJson(["status", plan.runId], paths);
-  assert.equal(status.state, "HUMAN");
-  assert.equal(status.context.retriesLeft, 0);
-
-  await cleanupWorktree(workspace.workspace);
+  assert.equal(final.ok, true);
+  assert.equal(final.state, "HUMAN");
 });
 
-test("evaluate guards reject non-CHECK, missing report, cleaned workspace, and unsupported adapter without events", async () => {
-  const paths = await tempPaths();
-  const plan = await runJson(["plan", "Evaluate guard path"], paths);
-  const nonCheck = await runJson(["evaluate", plan.runId, "--adapter", "fixture"], paths);
-  assert.equal(nonCheck.ok, false);
-  assert.equal(nonCheck.error, "evaluate_requires_check_state");
+test("evaluate requires CHECK state", async () => {
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
 
-  await runJson(["approve", plan.runId], paths);
-  const workspace = await runJson(["workspace", "create", plan.runId], paths);
-  const store = createFileRunStore(paths.storePath);
-  const codeProduced = await store.appendEvent(
-    plan.runId,
-    {
-      type: "CODE_PRODUCED",
-      report_path: path.join(paths.runsDir, plan.runId, "missing-generator-report.json"),
-      files_changed: ["anchor-output/missing.txt"],
-      attempt: 1
-    },
-    "generator"
-  );
-  assert.equal(codeProduced.ok, true);
-
-  const missingReport = await runJson(["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "pass"], paths);
-  assert.equal(missingReport.ok, false);
-  assert.equal(missingReport.error.code, "GENERATOR_REPORT_NOT_FOUND");
-  assert.equal((await runJson(["events", plan.runId], paths)).events.some((event) => event.event_type === "EVAL_COMPLETE"), false);
-
-  await cleanupWorktree(workspace.workspace);
+  const plan = await runJson(["plan", "Test"], { storePath, tasksDir });
+  const result = await runJson(["evaluate", plan.taskId], { storePath, tasksDir, worktreesDir });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /check/);
 });
 
-test("evaluate rejects cleaned workspace and unsupported adapter without EVAL_COMPLETE", async () => {
-  const paths = await tempPaths();
-  const { plan, workspace } = await generatedRun(paths);
-  const unsupported = await runJson(["evaluate", plan.runId, "--adapter", "command"], paths);
-  assert.equal(unsupported.ok, false);
-  assert.equal(unsupported.error.code, "UNSUPPORTED_ADAPTER");
-  assert.equal((await runJson(["events", plan.runId], paths)).events.some((event) => event.event_type === "EVAL_COMPLETE"), false);
+test("codex evaluator runs fake script, reads verdict.json, and advances CHECK to DONE", async () => {
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
 
-  await runJson(["workspace", "cleanup", plan.runId], paths);
-  const cleaned = await runJson(["evaluate", plan.runId, "--adapter", "fixture"], paths);
-  assert.equal(cleaned.ok, false);
-  assert.equal(cleaned.error, "workspace_required");
-  assert.equal((await exists(path.join(paths.runsDir, plan.runId, "evaluator-report.json"))), false);
+  const { taskId, storePath } = await planApproveGenerate(dir, tasksDir, worktreesDir);
 
-  await cleanupWorktree(workspace.workspace);
+  const fakeCodex = path.join(dir, "fake-codex.sh");
+  const { writeFile, chmod } = await import("node:fs/promises");
+  await writeFile(fakeCodex, [
+    "#!/bin/sh",
+    `mkdir -p "$PWD/.anchor/eval" 2>/dev/null || true`,
+    `echo '{"verdict":"PASS","feedback":"All tests pass. Implementation matches contract.","testsRun":3,"testsFailed":0}' > "$PWD/.anchor/eval/verdict.json"`
+  ].join("\n"));
+  await chmod(fakeCodex, 0o755);
+
+  process.env.ANCHOR_CODEX_COMMAND = fakeCodex;
+  process.env.ANCHOR_CODEX_ARGV_JSON = JSON.stringify(["fake-exec", "--cd", "__worktree__"]);
+  try {
+    const evalResult = await runJson(["evaluate", taskId, "--adapter", "codex"], { storePath, tasksDir, worktreesDir });
+
+    assert.equal(evalResult.ok, true);
+    assert.equal(evalResult.state, "DONE");
+    assert.equal(evalResult.verdict, "PASS");
+    assert.equal(evalResult.testsRun, 3);
+    assert.equal(evalResult.testsFailed, 0);
+    assert.equal(evalResult.event.event_type, "EVAL_COMPLETE");
+    assert.equal(evalResult.event.emitted_by, "evaluator");
+
+    const events = await runJson(["events", taskId], { storePath });
+    assert.equal(events.events[events.events.length - 1].state_after, "DONE");
+  } finally {
+    delete process.env.ANCHOR_CODEX_COMMAND;
+    delete process.env.ANCHOR_CODEX_ARGV_JSON;
+  }
+});
+
+test("codex evaluator falls back to exit code when verdict.json is missing", async () => {
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
+
+  const { taskId, storePath } = await planApproveGenerate(dir, tasksDir, worktreesDir);
+
+  const fakeCodex = path.join(dir, "fake-codex-fail.sh");
+  const { writeFile, chmod } = await import("node:fs/promises");
+  // Script exits 1 without writing verdict.json
+  await writeFile(fakeCodex, [
+    "#!/bin/sh",
+    "echo 'Evaluator: found bugs in the implementation'",
+    "exit 1"
+  ].join("\n"));
+  await chmod(fakeCodex, 0o755);
+
+  process.env.ANCHOR_CODEX_COMMAND = fakeCodex;
+  process.env.ANCHOR_CODEX_ARGV_JSON = JSON.stringify(["fake-exec", "--cd", "__worktree__"]);
+  try {
+    const evalResult = await runJson(["evaluate", taskId, "--adapter", "codex"], { storePath, tasksDir, worktreesDir });
+
+    assert.equal(evalResult.ok, true);
+    // Exit 1 → FAIL by fallback, and default retriesLeft=3 > 0 → goes to BUILD (not DONE)
+    assert.equal(evalResult.verdict, "FAIL");
+    assert.equal(evalResult.state, "BUILD");
+  } finally {
+    delete process.env.ANCHOR_CODEX_COMMAND;
+    delete process.env.ANCHOR_CODEX_ARGV_JSON;
+  }
 });

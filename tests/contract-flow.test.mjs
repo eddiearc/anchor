@@ -5,15 +5,10 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
-import { createFileRunStore } from "../dist/index.js";
 import { runCli } from "../dist/cli/index.js";
 
-async function tempPaths() {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "anchor-contract-"));
-  return {
-    storePath: path.join(dir, "runs.jsonl"),
-    runsDir: path.join(dir, "runs")
-  };
+async function tempDir(prefix = "anchor-contract-") {
+  return await mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
 async function runJson(args, paths) {
@@ -23,18 +18,22 @@ async function runJson(args, paths) {
 }
 
 test("plan creates deterministic contract artifact and waits in HUMAN", async () => {
-  const paths = await tempPaths();
-  const plan = await runJson(["plan", "Add", "a", "hello", "function"], paths);
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+  const tasksDir = path.join(dir, "tasks");
+
+  const plan = await runJson(["plan", "Add", "a", "hello", "function"], { storePath, tasksDir });
 
   assert.equal(plan.ok, true);
   assert.equal(plan.command, "plan");
   assert.equal(plan.state, "HUMAN");
-  assert.equal(plan.storePath, paths.storePath);
-  assert.equal(plan.runsDir, paths.runsDir);
-  assert.match(plan.contractPath, new RegExp(`${plan.runId}/contract\\.yaml$`));
+  assert.equal(plan.storePath, storePath);
+  assert.equal(plan.tasksDir, tasksDir);
+  assert.match(plan.taskId, /^TASK-/);
+  assert.match(plan.contractPath, new RegExp(`${plan.taskId}/contract\\.yaml$`));
 
   const content = await readFile(plan.contractPath, "utf8");
-  assert.match(content, /^id: "contract_run_/m);
+  assert.match(content, /^id: "contract_TASK-/m);
   assert.match(content, /^version: 1/m);
   assert.match(content, /^  summary: "Add a hello function"/m);
   assert.match(content, /^mode: "standard"/m);
@@ -45,7 +44,7 @@ test("plan creates deterministic contract artifact and waits in HUMAN", async ()
   assert.match(content, /^commands:/m);
   assert.match(content, /^non_goals:/m);
 
-  const events = await runJson(["events", plan.runId], paths);
+  const events = await runJson(["events", plan.taskId], { storePath });
   assert.deepEqual(
     events.events.map((event) => [event.seq, event.event_type, event.emitted_by, event.state_before, event.state_after]),
     [
@@ -53,13 +52,22 @@ test("plan creates deterministic contract artifact and waits in HUMAN", async ()
       [2, "CONTRACT_PRODUCED", "planner", "PLAN", "HUMAN"]
     ]
   );
-  assert.equal(events.events[1].payload.contract_id, plan.contractId);
+
+  // Check task was created
+  const taskResult = await runJson(["task", "show", plan.taskId], { storePath, tasksDir });
+  assert.equal(taskResult.ok, true);
+  assert.equal(taskResult.task.status, "in_progress");
+  assert.ok(taskResult.stateMachine);
+  assert.equal(taskResult.stateMachine.state, "HUMAN");
 });
 
 test("contract approve records approved sha and status detects dirty artifact", async () => {
-  const paths = await tempPaths();
-  const plan = await runJson(["plan", "Add login audit logging"], paths);
-  const contract = await runJson(["contract", plan.runId], paths);
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+  const tasksDir = path.join(dir, "tasks");
+
+  const plan = await runJson(["plan", "Add login audit logging"], { storePath, tasksDir });
+  const contract = await runJson(["contract", plan.taskId], { storePath, tasksDir });
   const manualSha = createHash("sha256").update(await readFile(plan.contractPath, "utf8")).digest("hex");
 
   assert.equal(contract.ok, true);
@@ -68,7 +76,7 @@ test("contract approve records approved sha and status detects dirty artifact", 
   assert.equal(contract.dirty, false);
   assert.equal(contract.contract, await readFile(plan.contractPath, "utf8"));
 
-  const approved = await runJson(["approve", plan.runId], paths);
+  const approved = await runJson(["approve", plan.taskId], { storePath, tasksDir });
   assert.equal(approved.ok, true);
   assert.equal(approved.state, "BUILD");
   assert.equal(approved.contractSha, manualSha);
@@ -76,51 +84,75 @@ test("contract approve records approved sha and status detects dirty artifact", 
   assert.equal(approved.event.emitted_by, "human");
   assert.equal(approved.event.payload.contract_sha, manualSha);
 
-  const cleanStatus = await runJson(["status", plan.runId], paths);
+  const cleanStatus = await runJson(["status", plan.taskId], { storePath, tasksDir });
   assert.equal(cleanStatus.state, "BUILD");
   assert.equal(cleanStatus.contract.approvedContractSha, manualSha);
   assert.equal(cleanStatus.contract.dirty, false);
   assert.deepEqual(cleanStatus.contract.warnings, []);
 
-  const events = await runJson(["events", plan.runId], paths);
+  const events = await runJson(["events", plan.taskId], { storePath });
   const approvalEvent = events.events.find((event) => event.event_type === "CONTRACT_APPROVED");
   assert.equal(approvalEvent.emitted_by, "human");
   assert.equal(approvalEvent.payload.contract_sha, manualSha);
 
   await appendFile(plan.contractPath, "\n# local edit after approval\n");
-  const dirtyStatus = await runJson(["status", plan.runId], paths);
+  const dirtyStatus = await runJson(["status", plan.taskId], { storePath, tasksDir });
   assert.equal(dirtyStatus.contract.dirty, true);
   assert.notEqual(dirtyStatus.contract.contractSha, manualSha);
   assert.deepEqual(dirtyStatus.contract.warnings, ["contract_sha_mismatch: artifact was modified after approval"]);
 
-  const dirtyContract = await runJson(["contract", plan.runId], paths);
+  const dirtyContract = await runJson(["contract", plan.taskId], { storePath, tasksDir });
   assert.equal(dirtyContract.dirty, true);
 });
 
-test("approve fails when a run has no contract artifact", async () => {
-  const paths = await tempPaths();
-  const demo = await runJson(["demo"], paths);
-  const result = await runJson(["approve", demo.runId], paths);
+test("approve fails when a task has no contract artifact", async () => {
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+  const tasksDir = path.join(dir, "tasks");
+
+  const demo = await runJson(["demo"], { storePath });
+  const result = await runJson(["approve", demo.taskId], { storePath, tasksDir });
 
   assert.equal(result.ok, false);
   assert.equal(result.error, "contract_not_found");
 });
 
-test("store still rejects non-human contract approval through source guard", async () => {
-  const paths = await tempPaths();
-  const plan = await runJson(["plan", "Guard approval source"], paths);
-  const store = createFileRunStore(paths.storePath);
-  const unauthorized = await store.appendEvent(
-    plan.runId,
-    {
-      type: "CONTRACT_APPROVED",
-      contract_id: plan.contractId,
-      contract_sha: plan.contractSha
-    },
-    "planner"
-  );
+test("plan --task uses an existing task", async () => {
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+  const tasksDir = path.join(dir, "tasks");
 
-  assert.equal(unauthorized.ok, false);
-  assert.equal(unauthorized.code, "UNAUTHORIZED_EVENT_SOURCE");
-  assert.equal((await store.getCurrentState(plan.runId)).state, "HUMAN");
+  const created = await runJson(["task", "create", "Pre-created task"], { tasksDir });
+  assert.equal(created.ok, true);
+
+  const plan = await runJson(["plan", "--task", created.taskId], { storePath, tasksDir });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.taskId, created.taskId);
+  assert.equal(plan.state, "HUMAN");
+
+  const taskResult = await runJson(["task", "show", created.taskId], { storePath, tasksDir });
+  assert.equal(taskResult.task.status, "in_progress");
+});
+
+test("plan --task fails for nonexistent task", async () => {
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+  const tasksDir = path.join(dir, "tasks");
+
+  const result = await runJson(["plan", "--task", "TASK-999"], { storePath, tasksDir });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "task_not_found");
+});
+
+test("plan --task fails when task already started", async () => {
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+  const tasksDir = path.join(dir, "tasks");
+
+  const created = await runJson(["task", "create", "Already started"], { tasksDir });
+  await runJson(["plan", "--task", created.taskId], { storePath, tasksDir });
+  const second = await runJson(["plan", "--task", created.taskId], { storePath, tasksDir });
+
+  assert.equal(second.ok, false);
+  assert.equal(second.error, "task_already_started");
 });

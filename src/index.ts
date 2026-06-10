@@ -1,11 +1,13 @@
 export const anchorVersion = "0.0.0";
 
+export * from "./core/agent-runner.js";
 export * from "./core/contracts.js";
 export * from "./core/evaluators.js";
 export * from "./core/generators.js";
 export * from "./core/permissions.js";
 export * from "./core/run-store.js";
 export * from "./core/state-machine.js";
+export * from "./core/tasks.js";
 export * from "./core/workspaces.js";
 
 export function getAnchorHelp() {
@@ -17,27 +19,35 @@ export function getAnchorHelp() {
     "Usage:",
     "  anchor --help",
     "  anchor --version",
+    "  anchor task create <title> [--description ...] [--status backlog|in_progress|done|aborted]",
+    "  anchor task list [--status backlog|in_progress|done|aborted]",
+    "  anchor task show <taskId>",
     "  anchor plan <task>",
-    "  anchor contract <runId>",
-    "  anchor approve <runId>",
-    "  anchor workspace create <runId>",
-    "  anchor workspace status <runId>",
-    "  anchor workspace cleanup <runId>",
-    "  anchor generate <runId> --adapter fixture|codex",
-    "  anchor evaluate <runId> --adapter fixture --verdict pass|fail",
-    "  anchor run-retry <runId> --fail-times <n>",
+    "  anchor plan --task <taskId>",
+    "  anchor contract <taskId>",
+    "  anchor approve <taskId>",
+    "  anchor workspace create <taskId>",
+    "  anchor workspace status <taskId>",
+    "  anchor workspace cleanup <taskId>",
+    "  anchor generate <taskId> --adapter fixture|codex",
+    "  anchor evaluate <taskId> --adapter fixture|codex [--verdict pass|fail]",
+    "  anchor run-retry <taskId> --fail-times <n>",
     "  anchor demo [--fixture happy|retry]",
-    "  anchor status <runId>",
-    "  anchor events <runId>",
+    "  anchor status <taskId>",
+    "  anchor events <taskId>",
     "",
-    "R10 status:",
-    "  Deterministic contract artifacts, git worktrees, fixture generation/evaluation/retry orchestration, Codex generator adapter, CLI demo, JSONL event store, and permission guards are installed.",
+    "R12 status:",
+    "  Deterministic contract artifacts, git worktrees, fixture generation/evaluation/retry orchestration, Codex generator adapter, Codex evaluator adapter, local task files (.anchor/tasks/*.yaml), CLI demo, JSONL event store, and permission guards are installed.",
     "  Fixture evaluation accepts only pass|fail verdict input, case-insensitively.",
-    "  Codex evaluator adapter, retry with Codex, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented.",
+    "  Codex evaluation runs Codex CLI in the worktree and reads .anchor/eval/verdict.json for structured PASS/FAIL.",
+    "  Task commands: anchor task create/list/show. Use anchor plan --task <taskId> to start a state machine on a task.",
+    "  Agent runner (Codex CLI invocation) is shared across Generator and Evaluator via src/core/agent-runner.ts.",
+    "  Run entity has been eliminated. Tasks are the unit of work — they hold their own state machine, contracts, workspaces, and reports.",
+    "  Task source adapters (GitHub/Linear), real filesystem sandboxing, git diff enforcement, and Web UI are not implemented.",
     "",
     "Store:",
-    "  Set ANCHOR_STORE_PATH to override the default .anchor/runs.jsonl store.",
-    "  Set ANCHOR_RUNS_DIR to override the default .anchor/runs artifact directory.",
+    "  Set ANCHOR_STORE_PATH to override the default .anchor/events.jsonl store.",
+    "  Set ANCHOR_TASKS_DIR to override the default .anchor/tasks directory.",
     "  Set ANCHOR_WORKTREES_DIR to override the default .anchor/worktrees workspace directory."
   ].join("\n");
 }

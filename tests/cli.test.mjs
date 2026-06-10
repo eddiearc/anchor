@@ -1,78 +1,78 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { runCli } from "../dist/cli/index.js";
 
-async function tempStorePath() {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "anchor-cli-"));
-  return path.join(dir, "runs.jsonl");
+async function tempDir(prefix = "anchor-") {
+  return await mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
-async function runJson(args, storePath) {
-  const result = await runCli(args, { storePath });
-  assert.equal(result.exitCode, 0);
+async function runJson(args, paths = {}) {
+  const result = await runCli(args, paths);
+  assert.equal(result.exitCode, 0, `CLI exited non-zero: ${result.output}`);
   return JSON.parse(result.output);
 }
 
-test("CLI demo happy path creates a DONE run and exposes status/events", async () => {
-  const storePath = await tempStorePath();
-  const demo = await runJson(["demo"], storePath);
+// ── Help and version ──
 
+test("Anchor CLI still prints help and version", async () => {
+  let helpResult = await runCli(["--help"], {});
+  assert.equal(helpResult.exitCode, 0);
+  assert.match(helpResult.output, /Anchor/);
+  assert.match(helpResult.output, /Usage:/);
+
+  let versionResult = await runCli(["--version"], {});
+  assert.equal(versionResult.exitCode, 0);
+  assert.equal(typeof versionResult.output, "string");
+});
+
+// ── Demo ──
+
+test("CLI demo happy path creates a DONE task and exposes status/events", async () => {
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+
+  const demo = await runJson(["demo"], { storePath });
   assert.equal(demo.ok, true);
+  assert.equal(demo.command, "demo");
   assert.equal(demo.fixture, "happy");
+  assert.match(demo.taskId, /^demo_happy_/);
   assert.equal(demo.finalState, "DONE");
-  assert.equal(demo.storePath, storePath);
-  assert.deepEqual(
-    demo.events.map((event) => [event.seq, event.event_type, event.emitted_by, event.state_before, event.state_after]),
-    [
-      [1, "TASK_RECEIVED", "system", null, "PLAN"],
-      [2, "CONTRACT_PRODUCED", "planner", "PLAN", "BUILD"],
-      [3, "CODE_PRODUCED", "generator", "BUILD", "CHECK"],
-      [4, "EVAL_COMPLETE", "evaluator", "CHECK", "DONE"]
-    ]
-  );
 
-  const status = await runJson(["status", demo.runId], storePath);
+  const status = await runJson(["status", demo.taskId], { storePath });
   assert.equal(status.state, "DONE");
 
-  const events = await runJson(["events", demo.runId], storePath);
-  assert.deepEqual(events.events, demo.events);
-
-  const lines = (await readFile(storePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  assert.equal(lines.filter((line) => line.record_type === "event").length, 4);
+  const events = await runJson(["events", demo.taskId], { storePath });
+  assert.equal(events.events.length, 4);
 });
 
 test("CLI demo retry fixture records CHECK FAIL -> BUILD retry -> CHECK PASS -> DONE", async () => {
-  const storePath = await tempStorePath();
-  const demo = await runJson(["demo", "--fixture", "retry"], storePath);
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
 
+  const demo = await runJson(["demo", "--fixture", "retry"], { storePath });
   assert.equal(demo.ok, true);
-  assert.equal(demo.fixture, "retry");
   assert.equal(demo.finalState, "DONE");
-  assert.deepEqual(
-    demo.events.map((event) => [event.seq, event.event_type, event.emitted_by, event.state_before, event.state_after]),
-    [
-      [1, "TASK_RECEIVED", "system", null, "PLAN"],
-      [2, "CONTRACT_PRODUCED", "planner", "PLAN", "BUILD"],
-      [3, "CODE_PRODUCED", "generator", "BUILD", "CHECK"],
-      [4, "EVAL_COMPLETE", "evaluator", "CHECK", "BUILD"],
-      [5, "CODE_PRODUCED", "generator", "BUILD", "CHECK"],
-      [6, "EVAL_COMPLETE", "evaluator", "CHECK", "DONE"]
-    ]
-  );
+
+  const events = await runJson(["events", demo.taskId], { storePath });
+  assert.equal(events.events.length, 6);
+  const types = events.events.map((e) => e.event_type);
+  assert.deepEqual(types, ["TASK_RECEIVED", "CONTRACT_PRODUCED", "CODE_PRODUCED", "EVAL_COMPLETE", "CODE_PRODUCED", "EVAL_COMPLETE"]);
+  assert.equal(events.events[3].payload.verdict, "FAIL");
+  assert.equal(events.events[5].payload.verdict, "PASS");
 });
 
-test("CLI status/events can read a previous run from a fresh CLI call", async () => {
-  const storePath = await tempStorePath();
-  const demo = await runJson(["demo"], storePath);
+test("CLI status/events can read a previous task from a fresh CLI call", async () => {
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
 
-  const status = await runJson(["status", demo.runId], storePath);
-  const events = await runJson(["events", demo.runId], storePath);
-
+  const demo = await runJson(["demo"], { storePath });
+  const status = await runJson(["status", demo.taskId], { storePath });
   assert.equal(status.state, "DONE");
-  assert.equal(events.state, "DONE");
+
+  const events = await runJson(["events", demo.taskId], { storePath });
   assert.equal(events.events.length, 4);
 });

@@ -15,7 +15,7 @@ export type EventEmitter = "system" | "planner" | "reviewer" | "generator" | "ev
 
 export type StoredEvent = {
   id: string;
-  run_id: string;
+  task_id: string;
   seq: number;
   event_type: Event["type"];
   payload: Event;
@@ -24,20 +24,6 @@ export type StoredEvent = {
   state_after: State;
   context_after: RunContext;
   timestamp: string;
-};
-
-export type RunRecord = {
-  id: string;
-  task: string;
-  context: RunContext;
-  created_at: string;
-};
-
-export type CreateRunOptions = {
-  id?: string;
-  context?: Partial<RunContext>;
-  timestamp?: string;
-  emittedBy?: EventEmitter;
 };
 
 export type AppendEventOptions = {
@@ -51,44 +37,37 @@ export type AppendEventOk = {
 
 export type AppendEventError = {
   ok: false;
-  code: "RUN_NOT_FOUND" | "UNAUTHORIZED_EVENT_SOURCE" | "INVALID_TRANSITION";
+  code: "UNAUTHORIZED_EVENT_SOURCE" | "INVALID_TRANSITION";
   message: string;
   transition?: TransitionError;
 };
 
 export type AppendEventResult = AppendEventOk | AppendEventError;
 
-export type RunSnapshot = {
-  run: RunRecord;
+export type TaskSnapshot = {
   state: State | InitialState;
   context: RunContext;
 };
 
+export const defaultContext: RunContext = {
+  retriesLeft: 3,
+  reviewRetriesLeft: 2
+};
+
 export type RunStore = {
-  createRun(task: string, options?: CreateRunOptions): Promise<AppendEventResult>;
   appendEvent(
-    runId: string,
+    taskId: string,
     event: Event,
     emittedBy: EventEmitter,
     options?: AppendEventOptions
   ): Promise<AppendEventResult>;
-  listEvents(runId: string): Promise<StoredEvent[]>;
-  getCurrentState(runId: string): Promise<RunSnapshot | null>;
+  listEvents(taskId: string): Promise<StoredEvent[]>;
+  getCurrentState(taskId: string): Promise<TaskSnapshot | null>;
 };
 
-type JsonlRecord =
-  | {
-      record_type: "run_created";
-      run: RunRecord;
-    }
-  | {
-      record_type: "event";
-      event: StoredEvent;
-    };
-
-const defaultContext: RunContext = {
-  retriesLeft: 3,
-  reviewRetriesLeft: 2
+type JsonlRecord = {
+  record_type: "event";
+  event: StoredEvent;
 };
 
 export function createFileRunStore(filePath: string): RunStore {
@@ -115,62 +94,14 @@ export function createFileRunStore(filePath: string): RunStore {
     await writeFile(absolutePath, content.length > 0 ? `${content}\n` : "");
   }
 
-  async function listRuns(): Promise<RunRecord[]> {
-    return (await readRecords())
-      .filter((record): record is Extract<JsonlRecord, { record_type: "run_created" }> => record.record_type === "run_created")
-      .map((record) => record.run);
-  }
-
-  async function getRun(runId: string): Promise<RunRecord | null> {
-    const runs = await listRuns();
-    return runs.find((run) => run.id === runId) ?? null;
-  }
-
-  async function appendStoredEvent(event: StoredEvent) {
+  async function appendEventRecord(event: StoredEvent) {
     const records = await readRecords();
     records.push({ record_type: "event", event });
     await writeRecords(records);
   }
 
   return {
-    async createRun(task, options = {}) {
-      const runId = options.id ?? randomId("run");
-      const createdAt = options.timestamp ?? new Date().toISOString();
-      const run: RunRecord = {
-        id: runId,
-        task,
-        context: {
-          ...defaultContext,
-          ...options.context
-        },
-        created_at: createdAt
-      };
-
-      const records = await readRecords();
-      records.push({ record_type: "run_created", run });
-      await writeRecords(records);
-
-      return this.appendEvent(
-        runId,
-        {
-          type: "TASK_RECEIVED",
-          task
-        },
-        options.emittedBy ?? "system",
-        { timestamp: createdAt }
-      );
-    },
-
-    async appendEvent(runId, event, emittedBy, options = {}) {
-      const run = await getRun(runId);
-      if (!run) {
-        return {
-          ok: false,
-          code: "RUN_NOT_FOUND",
-          message: `Run not found: ${runId}`
-        };
-      }
-
+    async appendEvent(taskId, event, emittedBy, options = {}) {
       const sourcePermission = validateEventSource(emittedBy, event.type);
       if (!sourcePermission.ok) {
         return {
@@ -180,8 +111,8 @@ export function createFileRunStore(filePath: string): RunStore {
         };
       }
 
-      const events = await this.listEvents(runId);
-      const current = replay(run, events);
+      const events = await this.listEvents(taskId);
+      const current = replay(taskId, events);
       const result = transition(current.state, event, current.context);
       if (!result.ok) {
         return {
@@ -194,7 +125,7 @@ export function createFileRunStore(filePath: string): RunStore {
 
       const storedEvent: StoredEvent = {
         id: randomId("event"),
-        run_id: runId,
+        task_id: taskId,
         seq: events.length + 1,
         event_type: event.type,
         payload: event,
@@ -205,46 +136,42 @@ export function createFileRunStore(filePath: string): RunStore {
         timestamp: options.timestamp ?? new Date().toISOString()
       };
 
-      await appendStoredEvent(storedEvent);
+      await appendEventRecord(storedEvent);
       return { ok: true, event: storedEvent };
     },
 
-    async listEvents(runId) {
+    async listEvents(taskId) {
       return (await readRecords())
         .filter((record): record is Extract<JsonlRecord, { record_type: "event" }> => record.record_type === "event")
         .map((record) => record.event)
-        .filter((event) => event.run_id === runId)
+        .filter((event) => event.task_id === taskId)
         .sort((a, b) => a.seq - b.seq);
     },
 
-    async getCurrentState(runId) {
-      const run = await getRun(runId);
-      if (!run) {
-        return null;
-      }
-      return replay(run, await this.listEvents(runId));
+    async getCurrentState(taskId) {
+      const events = await this.listEvents(taskId);
+      if (events.length === 0) return null;
+      return replay(taskId, events);
     }
   };
 }
 
-function replay(run: RunRecord, events: StoredEvent[]): RunSnapshot {
+function replay(taskId: string, events: StoredEvent[]): TaskSnapshot {
   let state: State | InitialState = null;
-  let context = run.context;
+  let context = defaultContext;
 
   for (const storedEvent of events) {
     const result = transition(state, storedEvent.payload, context);
     if (!result.ok) {
-      throw new Error(`stored_event_replay_failed:${storedEvent.run_id}:${storedEvent.seq}:${result.code}`);
+      throw new Error(
+        `stored_event_replay_failed:${taskId}:${storedEvent.seq}:${result.code}`
+      );
     }
     state = result.state;
     context = result.context;
   }
 
-  return {
-    run,
-    state,
-    context
-  };
+  return { state, context };
 }
 
 function randomId(prefix: string) {
