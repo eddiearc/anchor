@@ -655,7 +655,7 @@ Topics to discuss before implementation:
 
 ## Development
 
-Anchor is currently at R9: a TypeScript-first deterministic CLI MVP backed by contract artifacts, human approval SHA events, git worktree workspace management, deterministic fixture generation/evaluation/retry orchestration, the state machine core, event-sourced JSONL run store, and permission guard helpers.
+Anchor is currently at R10: a TypeScript-first deterministic CLI MVP backed by contract artifacts, human approval SHA events, git worktree workspace management, deterministic fixture generation/evaluation/retry orchestration, a Codex CLI Generator adapter, the state machine core, event-sourced JSONL run store, and permission guard helpers.
 
 ```bash
 pnpm install
@@ -681,6 +681,7 @@ ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor approve <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor workspace create <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor generate <runId> --adapter fixture
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor generate <runId> --adapter codex
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor evaluate <runId> --adapter fixture --verdict pass
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor run-retry <runId> --fail-times 1
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor workspace status <runId>
@@ -756,6 +757,27 @@ Then it appends `CODE_PRODUCED(generator)` with the report path, files changed, 
 
 For policy testing, `anchor generate <runId> --adapter fixture --fixture outside` writes outside the allowlist. That path writes a failure report but does not append `CODE_PRODUCED` and does not advance the run.
 
+R10 adds a Codex CLI generator adapter:
+
+```bash
+anchor generate <runId> --adapter codex
+```
+
+The Codex adapter requires `BUILD`, an active git worktree, and an approved contract. Anchor invokes `codex exec` from the recorded worktree cwd and passes a prompt containing the approved contract, worktree path, allowlist, denylist, and explicit instructions not to read or persist secrets, perform network operations, approve, evaluate, merge, commit, or push.
+
+After the command exits, Anchor collects changed files from the worktree, validates them with the same generator policy guard, writes `.anchor/runs/<runId>/generator-report.json`, and appends `CODE_PRODUCED(generator)` only when the command exits zero, changes at least one file, and passes policy.
+
+The Codex generator report includes `adapter="codex"`, `command`, redacted `argv`, `exitCode`, `stdoutSummary`, `stderrSummary`, `filesChanged`, `policyResult`, `commitSha`, and `summary`. The full prompt is not written to the report.
+
+Failure behavior is structured and does not advance state:
+
+- Missing Codex command returns `CODEX_CLI_UNAVAILABLE` without appending `CODE_PRODUCED`.
+- Non-zero Codex exit returns `CODEX_COMMAND_FAILED`, writes a failure report, and does not append `CODE_PRODUCED`.
+- Zero-exit no-op returns `CODEX_NO_CHANGES`, writes a failure report, and does not append `CODE_PRODUCED`.
+- Policy violation returns `POLICY_VIOLATION`, writes a failure report, and does not append `CODE_PRODUCED`.
+
+Automated tests do not require a real Codex installation. Set `ANCHOR_CODEX_COMMAND` and `ANCHOR_CODEX_ARGV_JSON` to point at a fake command; Anchor appends the generated prompt as the final argv element. Production defaults to `codex exec --cd <worktree> --sandbox workspace-write --ask-for-approval never <prompt>`.
+
 ### Evaluator Adapter
 
 R8 adds a deterministic local fixture evaluator:
@@ -797,7 +819,7 @@ Event payloads include attempt numbers:
 - `CODE_PRODUCED(generator)` includes `attempt`, `report_path`, and `files_changed`
 - `EVAL_COMPLETE(evaluator)` includes `attempt`, `verdict`, `report_path`, tests run, tests failed, and feedback
 
-`--fail-times 0` evaluates PASS on the first attempt and reaches `DONE`. `--fail-times 1` fails once, returns to `BUILD`, generates a second attempt, then passes and reaches `DONE`. A fail count above the retry budget eventually reaches `HUMAN` with `retriesLeft` at `0`. R9 does not call a real Codex/provider adapter, does not merge/commit output, and does not clean the worktree.
+`--fail-times 0` evaluates PASS on the first attempt and reaches `DONE`. `--fail-times 1` fails once, returns to `BUILD`, generates a second attempt, then passes and reaches `DONE`. A fail count above the retry budget eventually reaches `HUMAN` with `retriesLeft` at `0`. R9/R10 retry still uses fixture generation/evaluation only; it does not call Codex, merge/commit output, or clean the worktree.
 
 ### State Machine Core
 

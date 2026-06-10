@@ -11,6 +11,7 @@ import {
   getAnchorHelp,
   readContractArtifact,
   readWorkspaceStatus,
+  runGenerator,
   runFixtureGenerator,
   runFixtureEvaluator,
   generatorAttemptReportPath,
@@ -425,7 +426,7 @@ async function runGenerate(args: string[], storePath: string, runsDir: string, w
 
   const events = await store.listEvents(runId);
   const attempt = events.filter((event) => event.event_type === "CODE_PRODUCED").length + 1;
-  const result = await runFixtureGenerator({
+  const result = await runGenerator({
     runId,
     runsDir,
     workspace: workspace.metadata,

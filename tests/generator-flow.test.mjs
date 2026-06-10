@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -50,6 +50,56 @@ async function exists(filePath) {
 async function cleanupWorktree(workspace) {
   await execFileAsync("git", ["worktree", "remove", "--force", workspace.worktreePath], { encoding: "utf8" }).catch(() => {});
   await execFileAsync("git", ["branch", "-D", workspace.branch], { encoding: "utf8" }).catch(() => {});
+}
+
+async function createFakeCodexScript(paths) {
+  const scriptPath = path.join(path.dirname(paths.storePath), "fake-codex.mjs");
+  await writeFile(
+    scriptPath,
+    [
+      "import { mkdir, writeFile } from 'node:fs/promises';",
+      "import path from 'node:path';",
+      "const prompt = process.argv.at(-1) ?? '';",
+      "const runId = /Run ID: (\\S+)/.exec(prompt)?.[1] ?? 'unknown-run';",
+      "const mode = process.env.ANCHOR_FAKE_CODEX_MODE ?? 'success';",
+      "if (mode === 'nonzero') {",
+      "  console.error('fake codex failure');",
+      "  process.exit(17);",
+      "}",
+      "if (mode !== 'noop') {",
+      "  const dir = mode === 'outside' ? 'outside-output' : 'anchor-output';",
+      "  const filePath = path.join(process.cwd(), dir, `${runId}.txt`);",
+      "  await mkdir(path.dirname(filePath), { recursive: true });",
+      "  await writeFile(filePath, [`runId=${runId}`, `mode=${mode}`, `cwd=${process.cwd()}`, 'adapter=codex', ''].join('\\n'));",
+      "}",
+      "console.log(`fake codex ${mode}`);"
+    ].join("\n")
+  );
+  return scriptPath;
+}
+
+async function runWithFakeCodex(args, paths, scriptPath, mode) {
+  const previousCommand = process.env.ANCHOR_CODEX_COMMAND;
+  const previousArgv = process.env.ANCHOR_CODEX_ARGV_JSON;
+  const previousMode = process.env.ANCHOR_FAKE_CODEX_MODE;
+  process.env.ANCHOR_CODEX_COMMAND = process.execPath;
+  process.env.ANCHOR_CODEX_ARGV_JSON = JSON.stringify([scriptPath]);
+  process.env.ANCHOR_FAKE_CODEX_MODE = mode;
+  try {
+    return await runJson(args, paths);
+  } finally {
+    restoreEnv("ANCHOR_CODEX_COMMAND", previousCommand);
+    restoreEnv("ANCHOR_CODEX_ARGV_JSON", previousArgv);
+    restoreEnv("ANCHOR_FAKE_CODEX_MODE", previousMode);
+  }
+}
+
+function restoreEnv(key, value) {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
 }
 
 test("fixture generator runs in worktree, writes report, and advances BUILD to CHECK", async () => {
@@ -120,6 +170,111 @@ test("fixture generator policy violation writes report but does not append CODE_
 
   await cleanupWorktree(workspace.workspace);
   await rm(path.join(process.cwd(), "outside-output"), { recursive: true, force: true });
+});
+
+test("codex generator runs fake command in worktree, writes report, and advances BUILD to CHECK", async () => {
+  const paths = await tempPaths();
+  const scriptPath = await createFakeCodexScript(paths);
+  const { plan, workspace } = await preparedWorkspace(paths);
+  const generated = await runWithFakeCodex(["generate", plan.runId, "--adapter", "codex"], paths, scriptPath, "success");
+
+  assert.equal(generated.ok, true);
+  assert.equal(generated.state, "CHECK");
+  assert.deepEqual(generated.filesChanged, [`anchor-output/${plan.runId}.txt`]);
+  assert.equal(generated.event.event_type, "CODE_PRODUCED");
+  assert.equal(generated.event.payload.report_path, generated.reportPath);
+  assert.deepEqual(generated.event.payload.files_changed, generated.filesChanged);
+
+  const report = JSON.parse(await readFile(generated.reportPath, "utf8"));
+  assert.equal(report.adapter, "codex");
+  assert.equal(report.command, process.execPath);
+  assert.deepEqual(report.argv, [scriptPath, "[prompt redacted]"]);
+  assert.equal(report.exitCode, 0);
+  assert.match(report.stdoutSummary, /fake codex success/);
+  assert.deepEqual(report.policyResult, { ok: true });
+  assert.match(report.summary, /Codex generator changed 1 file/);
+
+  const generatedFile = path.join(workspace.workspace.worktreePath, "anchor-output", `${plan.runId}.txt`);
+  const content = await readFile(generatedFile, "utf8");
+  assert.match(content, new RegExp(`cwd=.*\\/worktrees\\/${plan.runId}`));
+  assert.equal(await exists(path.join(process.cwd(), "anchor-output", `${plan.runId}.txt`)), false);
+
+  await cleanupWorktree(workspace.workspace);
+  await rm(path.join(process.cwd(), "anchor-output"), { recursive: true, force: true });
+});
+
+test("codex generator policy violation writes report but does not append CODE_PRODUCED", async () => {
+  const paths = await tempPaths();
+  const scriptPath = await createFakeCodexScript(paths);
+  const { plan, workspace } = await preparedWorkspace(paths);
+  const generated = await runWithFakeCodex(["generate", plan.runId, "--adapter", "codex"], paths, scriptPath, "outside");
+
+  assert.equal(generated.ok, false);
+  assert.equal(generated.error.code, "POLICY_VIOLATION");
+  assert.equal(generated.state, "BUILD");
+  assert.equal(generated.error.report.adapter, "codex");
+  assert.equal(generated.error.report.policyResult.code, "GENERATOR_WRITE_OUTSIDE_ALLOWLIST");
+  assert.equal(generated.error.report.filesChanged.includes(`outside-output/${plan.runId}.txt`), true);
+  assert.equal(await exists(generated.error.reportPath), true);
+
+  const events = await runJson(["events", plan.runId], paths);
+  assert.equal(events.events.some((event) => event.event_type === "CODE_PRODUCED"), false);
+
+  await cleanupWorktree(workspace.workspace);
+  await rm(path.join(process.cwd(), "outside-output"), { recursive: true, force: true });
+});
+
+test("codex generator non-zero exit writes failure report without advancing state", async () => {
+  const paths = await tempPaths();
+  const scriptPath = await createFakeCodexScript(paths);
+  const { plan, workspace } = await preparedWorkspace(paths);
+  const generated = await runWithFakeCodex(["generate", plan.runId, "--adapter", "codex"], paths, scriptPath, "nonzero");
+
+  assert.equal(generated.ok, false);
+  assert.equal(generated.error.code, "CODEX_COMMAND_FAILED");
+  assert.equal(generated.state, "BUILD");
+  assert.equal(generated.error.report.adapter, "codex");
+  assert.equal(generated.error.report.exitCode, 17);
+  assert.match(generated.error.report.stderrSummary, /fake codex failure/);
+  assert.equal(await exists(generated.error.reportPath), true);
+
+  const events = await runJson(["events", plan.runId], paths);
+  assert.equal(events.events.some((event) => event.event_type === "CODE_PRODUCED"), false);
+
+  await cleanupWorktree(workspace.workspace);
+});
+
+test("codex generator no-op and unavailable paths do not append CODE_PRODUCED", async () => {
+  const paths = await tempPaths();
+  const scriptPath = await createFakeCodexScript(paths);
+  const { plan, workspace } = await preparedWorkspace(paths);
+  const noop = await runWithFakeCodex(["generate", plan.runId, "--adapter", "codex"], paths, scriptPath, "noop");
+
+  assert.equal(noop.ok, false);
+  assert.equal(noop.error.code, "CODEX_NO_CHANGES");
+  assert.equal(noop.state, "BUILD");
+  assert.equal(noop.error.report.filesChanged.length, 0);
+  assert.equal(await exists(noop.error.reportPath), true);
+
+  const previousCommand = process.env.ANCHOR_CODEX_COMMAND;
+  const previousArgv = process.env.ANCHOR_CODEX_ARGV_JSON;
+  process.env.ANCHOR_CODEX_COMMAND = path.join(path.dirname(paths.storePath), "missing-codex");
+  delete process.env.ANCHOR_CODEX_ARGV_JSON;
+  try {
+    const unavailable = await runJson(["generate", plan.runId, "--adapter", "codex"], paths);
+    assert.equal(unavailable.ok, false);
+    assert.equal(unavailable.error.code, "CODEX_CLI_UNAVAILABLE");
+    assert.equal(unavailable.state, "BUILD");
+    assert.equal(unavailable.error.reportPath, undefined);
+  } finally {
+    restoreEnv("ANCHOR_CODEX_COMMAND", previousCommand);
+    restoreEnv("ANCHOR_CODEX_ARGV_JSON", previousArgv);
+  }
+
+  const events = await runJson(["events", plan.runId], paths);
+  assert.equal(events.events.some((event) => event.event_type === "CODE_PRODUCED"), false);
+
+  await cleanupWorktree(workspace.workspace);
 });
 
 test("generate requires BUILD state and an active workspace", async () => {
