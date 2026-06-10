@@ -37,11 +37,13 @@ test("event source guard allows only the R3 permission matrix", () => {
   assert.equal(validateEventSource("planner", "CONTRACT_PRODUCED").ok, true);
   assert.equal(validateEventSource("reviewer", "REVIEW_COMPLETE").ok, true);
   assert.equal(validateEventSource("generator", "CODE_PRODUCED").ok, true);
+  assert.equal(validateEventSource("generator", "RUN_COMPLETE").ok, true);
   assert.equal(validateEventSource("evaluator", "EVAL_COMPLETE").ok, true);
   assert.equal(validateEventSource("human", "CONTRACT_APPROVED").ok, true);
   assert.equal(validateEventSource("human", "HUMAN_FORCE_PASS").ok, true);
   assert.equal(validateEventSource("human", "HUMAN_AMEND_PLAN").ok, true);
   assert.equal(validateEventSource("human", "HUMAN_ABORT").ok, true);
+  assert.equal(validateEventSource("human", "CONTRACT_REVISED").ok, true);
 });
 
 test("event source guard denies unauthorized source/event pairs", () => {

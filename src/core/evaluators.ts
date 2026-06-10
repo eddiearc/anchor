@@ -167,6 +167,10 @@ async function runCodexEvaluator(
     };
   }
 
+  // Auto-create evaluator sandbox directory
+  const sandboxDir = path.join(input.workspace.worktreePath, ".anchor", "eval", "tests");
+  await mkdir(sandboxDir, { recursive: true });
+
   const generatorReportPathStr = input.generatorReportPath ?? generatorReportPath(input.artifactsDir, input.taskId);
   const generatorReportContent = await readOptional(generatorReportPathStr);
   if (generatorReportContent === null) {

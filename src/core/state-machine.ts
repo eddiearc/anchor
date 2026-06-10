@@ -79,6 +79,23 @@ export type EvalCompleteEvent = {
   feedback?: string;
 };
 
+export type RunCompleteEvent = {
+  type: "RUN_COMPLETE";
+  report_path: string;
+  attempt: number;
+};
+
+export type ContractRevisedEvent = {
+  type: "CONTRACT_REVISED";
+  reason: string;
+};
+
+export type MergedEvent = {
+  type: "MERGED";
+  branch: string;
+  commit_sha: string;
+};
+
 export type Event =
   | TaskReceivedEvent
   | ContractProducedEvent
@@ -90,7 +107,10 @@ export type Event =
   | HumanAmendPlanEvent
   | HumanAbortEvent
   | CodeProducedEvent
-  | EvalCompleteEvent;
+  | EvalCompleteEvent
+  | RunCompleteEvent
+  | ContractRevisedEvent
+  | MergedEvent;
 
 export type RunContext = {
   retriesLeft: number;
@@ -139,6 +159,10 @@ export function transition(state: State | InitialState, event: Event, context: R
   }
 
   if (isWorkspaceAuditEvent(event) && isActiveState(state)) {
+    return ok(state, context);
+  }
+
+  if (isInfoEvent(event) && isActiveState(state)) {
     return ok(state, context);
   }
 
@@ -269,6 +293,10 @@ function isTerminalState(state: State): state is TerminalState {
 
 function isWorkspaceAuditEvent(event: Event) {
   return event.type === "WORKSPACE_CREATED" || event.type === "WORKSPACE_CLEANED";
+}
+
+function isInfoEvent(event: Event) {
+  return event.type === "RUN_COMPLETE" || event.type === "CONTRACT_REVISED" || event.type === "MERGED";
 }
 
 function isMode(mode: string): mode is Mode {

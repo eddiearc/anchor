@@ -21,6 +21,7 @@ export type RunPlannerInput = {
   adapter: string;
   repoPath: string;
   config?: AnchorConfig;
+  mode?: "quick" | "standard" | "thorough";
 };
 
 export type PlannerOk = {
@@ -59,12 +60,13 @@ export async function runPlanner(
 // ── fixture ──
 
 export async function runFixturePlanner(input: RunPlannerInput): Promise<PlannerOk | PlannerError> {
+  const mode = input.mode ?? "standard";
   return {
     ok: true,
-    mode: "standard",
-    reasoning: "Deterministic fixture contract.",
+    mode,
+    reasoning: `Deterministic fixture contract (${mode} mode).`,
     affectedScope: ["anchor-output/**", "src/**", "tests/**", "README.md", "package.json", "tsconfig*.json"],
-    contractYaml: buildTemplateContract(input.taskDescription, input.taskId)
+    contractYaml: buildTemplateContract(input.taskDescription, input.taskId, mode)
   };
 }
 
@@ -214,9 +216,9 @@ function parsePlannerOutput(yaml: string): { mode: "quick" | "standard" | "thoro
 
 // ── template contract (for fixture fallback) ──
 
-function buildTemplateContract(taskDescription: string, taskId: string): string {
+function buildTemplateContract(taskDescription: string, taskId: string, mode: "quick" | "standard" | "thorough" = "standard"): string {
   return [
-    `mode: standard`,
+    `mode: ${mode}`,
     `reasoning: Deterministic fixture contract.`,
     `affected_scope:`,
     `  - src/**`,

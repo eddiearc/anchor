@@ -176,13 +176,15 @@ async function runPlan(args: string[], storePath: string, tasksDir: string, conf
   await updateTask(taskId, { status: "in_progress" }, tasksDir);
 
   // Run planner to produce contract
+  const mode = parseMode(readOption(args, "--mode"));
   const planResult = await runPlanner({
     taskId,
     taskDescription: taskStr,
     artifactsDir: tasksDir,
     adapter,
     repoPath: process.cwd(),
-    config
+    config,
+    mode
   });
   if (!planResult.ok) {
     return { ok: false, error: planResult, taskId, storePath, tasksDir };
@@ -459,6 +461,7 @@ async function runGenerate(args: string[], storePath: string, tasksDir: string, 
 
   const adapter = readOption(args, "--adapter") ?? "fixture";
   const fixture = readOption(args, "--fixture");
+  const allowNetwork = isOptionPresent(args, "--allow-network");
   const store = createFileRunStore(storePath);
   const snapshot = await store.getCurrentState(taskId);
   if (!snapshot) {
@@ -487,7 +490,9 @@ async function runGenerate(args: string[], storePath: string, tasksDir: string, 
     contract: contract.content,
     adapter,
     fixture,
-    attempt
+    attempt,
+    config: _config,
+    allowNetwork: allowNetwork || _config?.agent_allow_network === true
   });
 
   if (!result.ok) {
@@ -502,6 +507,13 @@ async function runGenerate(args: string[], storePath: string, tasksDir: string, 
   if (!eventResult.ok) {
     return { ok: false, command: "generate", error: eventResult, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir, reportPath: result.reportPath };
   }
+
+  // Emit RUN_COMPLETE as informational audit event
+  await store.appendEvent(
+    taskId,
+    { type: "RUN_COMPLETE", report_path: result.reportPath, attempt },
+    "generator"
+  );
 
   const finalSnapshot = await store.getCurrentState(taskId);
   if (finalSnapshot) {
@@ -907,6 +919,13 @@ async function runAmendPlan(args: string[], storePath: string, tasksDir: string)
     return { ok: false, command: "amend-plan", error: eventResult, taskId, state: snapshot.state, storePath, tasksDir };
   }
 
+  // Emit CONTRACT_REVISED as informational audit event
+  await store.appendEvent(
+    taskId,
+    { type: "CONTRACT_REVISED", reason },
+    "human"
+  );
+
   const finalSnapshot = await store.getCurrentState(taskId);
   if (finalSnapshot) {
     await updateTask(taskId, { status: taskStatusFromState(finalSnapshot.state) }, tasksDir);
@@ -1075,6 +1094,19 @@ function readFixture(args: string[]) {
 function readOption(args: string[], option: string) {
   const index = args.indexOf(option);
   return index === -1 ? undefined : args[index + 1];
+}
+
+function isOptionPresent(args: string[], option: string) {
+  return args.includes(option);
+}
+
+function parseMode(mode: string | undefined): "quick" | "standard" | "thorough" | undefined {
+  if (!mode) return undefined;
+  const lower = mode.toLowerCase();
+  if (lower === "quick" || lower === "standard" || lower === "thorough") {
+    return lower as "quick" | "standard" | "thorough";
+  }
+  return undefined;
 }
 
 function readFailTimes(args: string[]): { ok: true; failTimes: number } | { ok: false; code: "INVALID_FAIL_TIMES"; message: string; detail: string } {

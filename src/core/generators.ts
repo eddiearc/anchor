@@ -7,7 +7,9 @@ import { getWorkspaceGitStatus, type WorkspaceMetadata } from "./workspaces.js";
 import {
   type CommandRunner,
   type CommandResult,
+  type RetryConfig,
   defaultCommandRunner,
+  defaultRetryConfig,
   runAgent,
   buildCodexArgv,
   codexCommand,
@@ -73,6 +75,7 @@ export type RunGeneratorInput = {
   attempt: number;
   reportPath?: string;
   config?: AnchorConfig;
+  allowNetwork?: boolean;
 };
 
 export async function runGenerator(
@@ -172,12 +175,18 @@ async function runCodexGenerator(
 
   const command = codexCommand();
   const prompt = buildGeneratorPrompt(input);
-  const argv = buildCodexArgv(input.workspace.worktreePath, prompt);
+  const allowNetwork = input.config?.agent_allow_network === true;
+  const argv = buildCodexArgv(input.workspace.worktreePath, prompt, allowNetwork);
   const startedAt = new Date().toISOString();
+
+  const retryConfig: RetryConfig = {
+    maxRetries: input.config?.agent_retry_max ?? defaultRetryConfig.maxRetries,
+    backoffMs: input.config?.agent_retry_backoff_ms ?? defaultRetryConfig.backoffMs
+  };
 
   let result: CommandResult;
   try {
-    result = await runAgent(command, argv, input.workspace.worktreePath, runner);
+    result = await runAgent(command, argv, input.workspace.worktreePath, runner, retryConfig);
   } catch (error) {
     if (isCommandUnavailable(error)) {
       return {

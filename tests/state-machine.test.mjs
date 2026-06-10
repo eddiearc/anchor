@@ -212,3 +212,32 @@ test("illegal: invalid eval verdict returns structured error", () => {
   assert.equal(result.ok, false);
   assert.equal(result.code, "INVALID_EVAL_VERDICT");
 });
+
+test("RUN_COMPLETE passes through any active state unchanged", () => {
+  for (const state of ["PLAN", "REVIEW", "HUMAN", "BUILD", "CHECK"]) {
+    const result = transition(state, { type: "RUN_COMPLETE", report_path: "report.md", attempt: 1 }, context());
+    assert.equal(result.ok, true);
+    assert.equal(result.state, state);
+  }
+});
+
+test("CONTRACT_REVISED passes through any active state unchanged", () => {
+  for (const state of ["PLAN", "REVIEW", "HUMAN", "BUILD", "CHECK"]) {
+    const result = transition(state, { type: "CONTRACT_REVISED", reason: "scope changed" }, context());
+    assert.equal(result.ok, true);
+    assert.equal(result.state, state);
+  }
+});
+
+test("MERGED passes through any active state unchanged", () => {
+  for (const state of ["PLAN", "REVIEW", "HUMAN", "BUILD", "CHECK"]) {
+    const result = transition(state, { type: "MERGED", branch: "main", commit_sha: "abc123" }, context());
+    assert.equal(result.ok, true);
+    assert.equal(result.state, state);
+  }
+});
+
+test("info events are rejected in terminal states", () => {
+  assert.equal(transition("DONE", { type: "RUN_COMPLETE", report_path: "r", attempt: 1 }, context()).ok, false);
+  assert.equal(transition("ABORT", { type: "CONTRACT_REVISED", reason: "r" }, context()).ok, false);
+});

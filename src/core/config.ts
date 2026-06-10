@@ -12,6 +12,9 @@ export type AnchorConfig = {
   reviewer_prompt?: string;
   generator_prompt?: string;
   evaluator_prompt?: string;
+  agent_retry_max?: number;
+  agent_retry_backoff_ms?: number;
+  agent_allow_network?: boolean;
 };
 
 function templatePath(): string {
@@ -131,10 +134,27 @@ function parseConfig(raw: string): AnchorConfig {
     planner_prompt: config.planner_prompt,
     reviewer_prompt: config.reviewer_prompt,
     generator_prompt: config.generator_prompt,
-    evaluator_prompt: config.evaluator_prompt
+    evaluator_prompt: config.evaluator_prompt,
+    agent_retry_max: parseOptionalInt(config.agent_retry_max),
+    agent_retry_backoff_ms: parseOptionalInt(config.agent_retry_backoff_ms),
+    agent_allow_network: parseOptionalBool(config.agent_allow_network)
   };
 }
 
 function isIndented(line: string): boolean {
   return (line.match(/^(\s+)/)?.[0].length ?? 0) > 0 && line.trim().length > 0;
+}
+
+function parseOptionalInt(value: string | undefined): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : undefined;
+}
+
+function parseOptionalBool(value: string | undefined): boolean | undefined {
+  if (value === undefined || value === "") return undefined;
+  const lower = value.trim().toLowerCase();
+  if (lower === "true" || lower === "yes") return true;
+  if (lower === "false" || lower === "no") return false;
+  return undefined;
 }
