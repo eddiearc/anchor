@@ -202,7 +202,7 @@ export function sanitizeRunId(runId: string): string {
   return runId.replace(/[^A-Za-z0-9._-]/g, "-");
 }
 
-async function getWorkspaceGitStatus(worktreePath: string): Promise<WorkspaceGitStatus> {
+export async function getWorkspaceGitStatus(worktreePath: string): Promise<WorkspaceGitStatus> {
   const exists = await pathExists(worktreePath);
   if (!exists) {
     return {

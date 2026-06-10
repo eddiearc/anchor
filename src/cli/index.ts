@@ -11,6 +11,7 @@ import {
   getAnchorHelp,
   readContractArtifact,
   readWorkspaceStatus,
+  runFixtureGenerator,
   writeContractArtifact,
   type Event,
   type StoredEvent
@@ -61,6 +62,10 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
     return json(await runWorkspace(rest, storePath, runsDir, worktreesDir));
   }
 
+  if (command === "generate") {
+    return json(await runGenerate(rest, storePath, runsDir, worktreesDir));
+  }
+
   if (command === "demo") {
     return json(await runDemo(rest, storePath));
   }
@@ -76,6 +81,113 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   return {
     exitCode: 1,
     output: [`Unknown command: ${command}`, "", getAnchorHelp()].join("\n")
+  };
+}
+
+async function runGenerate(args: string[], storePath: string, runsDir: string, worktreesDir: string) {
+  const runId = args[0];
+  if (!runId) {
+    return { ok: false, error: "run_id_required", storePath, runsDir, worktreesDir };
+  }
+
+  const adapter = readOption(args, "--adapter") ?? "fixture";
+  const fixture = readOption(args, "--fixture");
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(runId);
+  if (!snapshot) {
+    return { ok: false, error: "run_not_found", runId, storePath, runsDir, worktreesDir };
+  }
+  if (snapshot.state !== "BUILD") {
+    return {
+      ok: false,
+      error: "generate_requires_build_state",
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir
+    };
+  }
+
+  const workspace = await readWorkspaceStatus(runsDir, runId);
+  if (!workspace || workspace.metadata.cleanedAt || !workspace.status.pathExists || !workspace.status.isGitWorktree) {
+    return {
+      ok: false,
+      error: "workspace_required",
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir,
+      workspace
+    };
+  }
+
+  const contract = await readContractArtifact(runsDir, runId);
+  if (!contract) {
+    return { ok: false, error: "contract_not_found", runId, state: snapshot.state, storePath, runsDir, worktreesDir };
+  }
+
+  const events = await store.listEvents(runId);
+  const attempt = events.filter((event) => event.event_type === "CODE_PRODUCED").length + 1;
+  const result = await runFixtureGenerator({
+    runId,
+    runsDir,
+    workspace: workspace.metadata,
+    contract: contract.content,
+    adapter,
+    fixture,
+    attempt
+  });
+
+  if (!result.ok) {
+    return {
+      ok: false,
+      command: "generate",
+      error: result,
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir
+    };
+  }
+
+  const eventResult = await store.appendEvent(
+    runId,
+    {
+      type: "CODE_PRODUCED",
+      report_path: result.reportPath,
+      files_changed: result.filesChanged,
+      attempt
+    },
+    "generator"
+  );
+  if (!eventResult.ok) {
+    return {
+      ok: false,
+      command: "generate",
+      error: eventResult,
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir,
+      reportPath: result.reportPath
+    };
+  }
+
+  return {
+    ok: true,
+    command: "generate",
+    runId,
+    state: (await store.getCurrentState(runId))?.state ?? eventResult.event.state_after,
+    storePath,
+    runsDir,
+    worktreesDir,
+    reportPath: result.reportPath,
+    filesChanged: result.filesChanged,
+    event: summarizeEvent(eventResult.event)
   };
 }
 
@@ -471,6 +583,11 @@ function readFixture(args: string[]) {
     return fixture;
   }
   throw new Error(`unsupported_fixture:${fixture ?? ""}`);
+}
+
+function readOption(args: string[], option: string) {
+  const index = args.indexOf(option);
+  return index === -1 ? undefined : args[index + 1];
 }
 
 function fixtureEvents(fixture: "happy" | "retry"): Array<{ emittedBy: string; event: Event }> {

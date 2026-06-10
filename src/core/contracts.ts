@@ -47,7 +47,7 @@ export function createTemplateContract(task: string, runId: string): ContractArt
       "The final report references this approved contract."
     ],
     files: {
-      allowlist: ["src/**", "tests/**", "README.md", "package.json", "tsconfig*.json"],
+      allowlist: ["anchor-output/**", "src/**", "tests/**", "README.md", "package.json", "tsconfig*.json"],
       denylist: [".env*", "secrets/**", "node_modules/**", "dist/**", ".git/**"]
     },
     commands: ["pnpm typecheck", "pnpm test", "pnpm build"],

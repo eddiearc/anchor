@@ -655,7 +655,7 @@ Topics to discuss before implementation:
 
 ## Development
 
-Anchor is currently at R6: a TypeScript-first deterministic CLI MVP backed by contract artifacts, human approval SHA events, git worktree workspace management, the state machine core, event-sourced JSONL run store, and permission guard helpers.
+Anchor is currently at R7: a TypeScript-first deterministic CLI MVP backed by contract artifacts, human approval SHA events, git worktree workspace management, deterministic fixture generation, the state machine core, event-sourced JSONL run store, and permission guard helpers.
 
 ```bash
 pnpm install
@@ -680,6 +680,7 @@ ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor contract <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor approve <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor workspace create <runId>
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor generate <runId> --adapter fixture
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor workspace status <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor workspace cleanup <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor status <runId>
@@ -688,7 +689,7 @@ ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor demo
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor demo --fixture retry
 ```
 
-CLI command output is stable JSON for `plan`, `contract`, `approve`, `workspace create`, `workspace status`, `workspace cleanup`, `demo`, `status`, and `events`. `plan` creates a standard-mode contract and leaves the run in `HUMAN`. `approve` reads the contract artifact, computes its SHA-256, and appends `CONTRACT_APPROVED` by `human` with `contract_id` and `contract_sha`, moving the run to `BUILD`. `workspace create` requires that approved `BUILD` state, creates an isolated git worktree and branch, writes workspace metadata, and appends `WORKSPACE_CREATED` by `system`. `workspace cleanup` removes only the metadata-recorded worktree path, writes a cleanup tombstone, and appends `WORKSPACE_CLEANED` by `system`. `status` and `contract` report a dirty warning when the current artifact SHA differs from the approved SHA.
+CLI command output is stable JSON for `plan`, `contract`, `approve`, `workspace create`, `generate`, `workspace status`, `workspace cleanup`, `demo`, `status`, and `events`. `plan` creates a standard-mode contract and leaves the run in `HUMAN`. `approve` reads the contract artifact, computes its SHA-256, and appends `CONTRACT_APPROVED` by `human` with `contract_id` and `contract_sha`, moving the run to `BUILD`. `workspace create` requires that approved `BUILD` state, creates an isolated git worktree and branch, writes workspace metadata, and appends `WORKSPACE_CREATED` by `system`. `generate` requires `BUILD`, an active workspace, and an approved contract; the fixture adapter writes inside the worktree, validates changed files against the contract allowlist/denylist, writes a generator report, and appends `CODE_PRODUCED(generator)` only on policy success. `workspace cleanup` removes only the metadata-recorded worktree path, writes a cleanup tombstone, and appends `WORKSPACE_CLEANED` by `system`. `status` and `contract` report a dirty warning when the current artifact SHA differs from the approved SHA.
 
 `events` includes `seq`, `event_type`, `payload`, `emitted_by`, `state_before`, and `state_after`.
 
@@ -707,7 +708,7 @@ The R5 deterministic planner template writes YAML with:
 - `commands`
 - `non_goals`
 
-There is no LLM or provider call in R5. The contract artifact is generated from the task string and run id.
+There is no LLM or provider call in the deterministic contract flow. The contract artifact is generated from the task string and run id.
 
 ### Workspace Management
 
@@ -723,7 +724,33 @@ The R6 workspace layer records metadata at `.anchor/runs/<runId>/workspace.json`
 
 `anchor workspace create <runId>` is idempotent for the same run. Repeated create returns the existing metadata instead of creating another branch or worktree. `anchor workspace status <runId>` reports whether the path exists, whether it is a git worktree, whether it is clean, and the changed files from `git status --porcelain`. `anchor workspace cleanup <runId>` removes the metadata-recorded worktree and leaves run history intact.
 
-There is no code generation, provider call, evaluator adapter, retry loop, or real sandbox in R6. The worktree only prepares an isolated git workspace for later Generator adapters.
+There is no provider call, evaluator adapter, retry loop, or real sandbox in R6. The worktree only prepares an isolated git workspace for Generator adapters.
+
+### Generator Adapter
+
+R7 adds a deterministic local fixture adapter:
+
+```bash
+anchor generate <runId> --adapter fixture
+```
+
+The fixture writes `anchor-output/<runId>.txt` inside the recorded worktree, then reads changed files from `git status --porcelain`. It validates those files with `validateWorkspacePolicy({ role: "generator", allowlist, denylist })`, where allowlist and denylist are read from the approved `contract.yaml`.
+
+On success, Anchor writes `.anchor/runs/<runId>/generator-report.json` with:
+
+- `adapter`
+- `fixture`
+- `runId`
+- `startedAt`
+- `finishedAt`
+- `filesChanged`
+- `policyResult`
+- `commitSha`
+- `summary`
+
+Then it appends `CODE_PRODUCED(generator)` with the report path, files changed, and attempt number. The run moves from `BUILD` to `CHECK`.
+
+For policy testing, `anchor generate <runId> --adapter fixture --fixture outside` writes outside the allowlist. That path writes a failure report but does not append `CODE_PRODUCED` and does not advance the run.
 
 ### State Machine Core
 
@@ -786,15 +813,15 @@ validateWorkspacePolicy({
 });
 ```
 
-The run store calls `validateEventSource` before transition evaluation and refuses unauthorized events without writing them. Workspace policy helpers are pure checks only; R6 does not implement a real filesystem sandbox or git diff enforcement.
+The run store calls `validateEventSource` before transition evaluation and refuses unauthorized events without writing them. Workspace policy helpers are pure checks only; R7 does not implement a real filesystem sandbox or git diff enforcement.
 
-R6 does not include provider adapters, code generation, evaluator adapters, retry loop, real filesystem sandboxing, git diff enforcement, or Web UI.
+R7 does not include provider adapters, evaluator adapters, retry loop, real filesystem sandboxing, git diff enforcement, or Web UI.
 
 ---
 
 ## Status
 
-**R6 workspace and git worktree management.** Deterministic `plan`, `contract`, `approve`, `workspace create`, `workspace status`, and `workspace cleanup` commands are in place, with `.anchor/runs/<runId>/contract.yaml`, approved contract SHA events, `.anchor/runs/<runId>/workspace.json`, git worktree metadata, workspace audit events, status/contract dirty warnings, the deterministic CLI demo, TypeScript project skeleton, transition core, JSONL event-sourced run store, permission/source guards, workspace policy helpers, and test/build baseline. Providers, code generation, evaluator adapters, retry loop, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented yet.
+**R7 Generator adapter MVP.** Deterministic `plan`, `contract`, `approve`, `workspace create`, `generate --adapter fixture`, `workspace status`, and `workspace cleanup` commands are in place, with `.anchor/runs/<runId>/contract.yaml`, approved contract SHA events, `.anchor/runs/<runId>/workspace.json`, git worktree metadata, workspace audit events, `.anchor/runs/<runId>/generator-report.json`, `CODE_PRODUCED(generator)` events, status/contract dirty warnings, the deterministic CLI demo, TypeScript project skeleton, transition core, JSONL event-sourced run store, permission/source guards, workspace policy helpers, and test/build baseline. Providers, evaluator adapters, retry loop, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented yet.
 
 ---
 
