@@ -7,6 +7,7 @@ export * from "./core/evaluators.js";
 export * from "./core/generators.js";
 export * from "./core/permissions.js";
 export * from "./core/planners.js";
+export * from "./core/reviewers.js";
 export * from "./core/run-store.js";
 export * from "./core/state-machine.js";
 export * from "./core/tasks.js";
@@ -27,7 +28,7 @@ export function getAnchorHelp() {
     "  anchor plan <task>",
     "  anchor plan --task <taskId>",
     "  anchor contract <taskId>",
-    "  anchor approve <taskId>",
+    "  anchor review <taskId> --adapter fixture|codex [--verdict ready|needs_revision]",
     "  anchor workspace create <taskId>",
     "  anchor workspace status <taskId>",
     "  anchor workspace cleanup <taskId>",
@@ -35,6 +36,9 @@ export function getAnchorHelp() {
     "  anchor evaluate <taskId> --adapter fixture|codex [--verdict pass|fail]",
     "  anchor run-retry <taskId> [--adapter fixture|codex] --fail-times <n>",
     "  anchor demo [--fixture happy|retry]",
+    "  anchor abort <taskId>",
+    "  anchor force-pass <taskId>",
+    "  anchor amend-plan <taskId> --reason \"...\"",
     "  anchor status <taskId>",
     "  anchor events <taskId>",
     "",
@@ -44,7 +48,9 @@ export function getAnchorHelp() {
     "  Codex evaluation runs Codex CLI in the worktree and reads .anchor/eval/verdict.json for structured PASS/FAIL.",
     "  Task commands: anchor task create/list/show. Use anchor plan --task <taskId> to start a state machine on a task.",
     "  Agent runner (Codex CLI invocation) is shared across Generator and Evaluator via src/core/agent-runner.ts.",
-    "  Run entity has been eliminated. Tasks are the unit of work — they hold their own state machine, contracts, workspaces, and reports.",
+    "  Reviewer (anchor review) supports fixture and Codex adapters. Fixture returns READY by default.",
+    "  Human commands (abort, force-pass, amend-plan) allow intervention during HUMAN state.",
+    "  Abort works from any active state (PLAN, REVIEW, HUMAN, BUILD, CHECK).",
     "  Task source adapters (GitHub/Linear), real filesystem sandboxing, git diff enforcement, and Web UI are not implemented.",
     "",
     "Store:",

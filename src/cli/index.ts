@@ -17,6 +17,7 @@ import {
   runGenerator,
   runEvaluator,
   runPlanner,
+  runReviewer,
   generatorAttemptReportPath,
   evaluatorAttemptReportPath,
   updateTask,
@@ -89,6 +90,22 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
 
   if (command === "run-retry") {
     return json(await runRetry(rest, storePath, tasksDir, worktreesDir, config));
+  }
+
+  if (command === "review") {
+    return json(await runReview(rest, storePath, tasksDir, config));
+  }
+
+  if (command === "abort") {
+    return json(await runAbort(rest, storePath, tasksDir));
+  }
+
+  if (command === "force-pass") {
+    return json(await runForcePass(rest, storePath, tasksDir));
+  }
+
+  if (command === "amend-plan") {
+    return json(await runAmendPlan(rest, storePath, tasksDir));
   }
 
   if (command === "demo") {
@@ -709,6 +726,200 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
     tasksDir,
     worktreesDir,
     steps
+  };
+}
+
+// ── review ──
+
+async function runReview(args: string[], storePath: string, tasksDir: string, _config: AnchorConfig) {
+  const taskId = args[0];
+  if (!taskId) {
+    return { ok: false, error: "task_id_required", storePath, tasksDir };
+  }
+
+  const adapter = readOption(args, "--adapter") ?? "fixture";
+  const verdict = readOption(args, "--verdict");
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(taskId);
+  if (!snapshot) {
+    return { ok: false, error: "task_not_started", taskId, storePath, tasksDir };
+  }
+  if (snapshot.state !== "REVIEW") {
+    return { ok: false, error: "review_requires_review_state", taskId, state: snapshot.state, storePath, tasksDir };
+  }
+
+  const contract = await readContractArtifact(tasksDir, taskId);
+  if (!contract) {
+    return { ok: false, error: "contract_not_found", taskId, state: snapshot.state, storePath, tasksDir };
+  }
+
+  const result = await runReviewer({
+    taskId,
+    artifactsDir: tasksDir,
+    contract: contract.content,
+    adapter,
+    verdict
+  });
+  if (!result.ok) {
+    return { ok: false, command: "review", error: result, taskId, state: snapshot.state, storePath, tasksDir };
+  }
+
+  const eventResult = await store.appendEvent(
+    taskId,
+    { type: "REVIEW_COMPLETE", verdict: result.report.verdict },
+    "reviewer"
+  );
+  if (!eventResult.ok) {
+    return { ok: false, command: "review", error: eventResult, taskId, state: snapshot.state, storePath, tasksDir, reportPath: result.reportPath };
+  }
+
+  const finalSnapshot = await store.getCurrentState(taskId);
+  if (finalSnapshot) {
+    await updateTask(taskId, { status: taskStatusFromState(finalSnapshot.state) }, tasksDir);
+  }
+
+  return {
+    ok: true,
+    command: "review",
+    taskId,
+    state: finalSnapshot?.state ?? eventResult.event.state_after,
+    storePath,
+    tasksDir,
+    verdict: result.report.verdict,
+    reportPath: result.reportPath,
+    event: summarizeEvent(eventResult.event)
+  };
+}
+
+// ── abort ──
+
+async function runAbort(args: string[], storePath: string, tasksDir: string) {
+  const taskId = args[0];
+  if (!taskId) {
+    return { ok: false, error: "task_id_required", storePath, tasksDir };
+  }
+
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(taskId);
+  if (!snapshot) {
+    return { ok: false, error: "task_not_started", taskId, storePath, tasksDir };
+  }
+
+  // Abort works from any active state
+  const activeStates = ["PLAN", "REVIEW", "HUMAN", "BUILD", "CHECK"];
+  if (!activeStates.includes(snapshot.state ?? "")) {
+    return { ok: false, error: "abort_requires_active_state", taskId, state: snapshot.state, storePath, tasksDir };
+  }
+
+  const reason = readOption(args, "--reason") ?? "Human abort";
+  const eventResult = await store.appendEvent(
+    taskId,
+    { type: "HUMAN_ABORT", reason },
+    "human"
+  );
+  if (!eventResult.ok) {
+    return { ok: false, command: "abort", error: eventResult, taskId, state: snapshot.state, storePath, tasksDir };
+  }
+
+  const finalSnapshot = await store.getCurrentState(taskId);
+  if (finalSnapshot) {
+    await updateTask(taskId, { status: taskStatusFromState(finalSnapshot.state) }, tasksDir);
+  }
+
+  return {
+    ok: true,
+    command: "abort",
+    taskId,
+    state: finalSnapshot?.state ?? eventResult.event.state_after,
+    storePath,
+    tasksDir,
+    event: summarizeEvent(eventResult.event)
+  };
+}
+
+// ── force-pass ──
+
+async function runForcePass(args: string[], storePath: string, tasksDir: string) {
+  const taskId = args[0];
+  if (!taskId) {
+    return { ok: false, error: "task_id_required", storePath, tasksDir };
+  }
+
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(taskId);
+  if (!snapshot) {
+    return { ok: false, error: "task_not_started", taskId, storePath, tasksDir };
+  }
+  if (snapshot.state !== "HUMAN") {
+    return { ok: false, error: "force_pass_requires_human_state", taskId, state: snapshot.state, storePath, tasksDir };
+  }
+
+  const reason = readOption(args, "--reason") ?? "Human force-pass";
+  const eventResult = await store.appendEvent(
+    taskId,
+    { type: "HUMAN_FORCE_PASS", reason },
+    "human"
+  );
+  if (!eventResult.ok) {
+    return { ok: false, command: "force-pass", error: eventResult, taskId, state: snapshot.state, storePath, tasksDir };
+  }
+
+  const finalSnapshot = await store.getCurrentState(taskId);
+  if (finalSnapshot) {
+    await updateTask(taskId, { status: taskStatusFromState(finalSnapshot.state) }, tasksDir);
+  }
+
+  return {
+    ok: true,
+    command: "force-pass",
+    taskId,
+    state: finalSnapshot?.state ?? eventResult.event.state_after,
+    storePath,
+    tasksDir,
+    event: summarizeEvent(eventResult.event)
+  };
+}
+
+// ── amend-plan ──
+
+async function runAmendPlan(args: string[], storePath: string, tasksDir: string) {
+  const taskId = args[0];
+  if (!taskId) {
+    return { ok: false, error: "task_id_required", storePath, tasksDir };
+  }
+
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(taskId);
+  if (!snapshot) {
+    return { ok: false, error: "task_not_started", taskId, storePath, tasksDir };
+  }
+  if (snapshot.state !== "HUMAN") {
+    return { ok: false, error: "amend_plan_requires_human_state", taskId, state: snapshot.state, storePath, tasksDir };
+  }
+
+  const reason = readOption(args, "--reason") ?? "Human amended plan";
+  const eventResult = await store.appendEvent(
+    taskId,
+    { type: "HUMAN_AMEND_PLAN", reason },
+    "human"
+  );
+  if (!eventResult.ok) {
+    return { ok: false, command: "amend-plan", error: eventResult, taskId, state: snapshot.state, storePath, tasksDir };
+  }
+
+  const finalSnapshot = await store.getCurrentState(taskId);
+  if (finalSnapshot) {
+    await updateTask(taskId, { status: taskStatusFromState(finalSnapshot.state) }, tasksDir);
+  }
+
+  return {
+    ok: true,
+    command: "amend-plan",
+    taskId,
+    state: finalSnapshot?.state ?? eventResult.event.state_after,
+    storePath,
+    tasksDir,
+    event: summarizeEvent(eventResult.event)
   };
 }
 
