@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { createFileRunStore } from "../dist/index.js";
 import { runCli } from "../dist/cli/index.js";
 
 const execFileAsync = promisify(execFile);
@@ -134,4 +135,67 @@ test("generate requires BUILD state and an active workspace", async () => {
   const missingWorkspace = await runJson(["generate", plan.runId, "--adapter", "fixture"], paths);
   assert.equal(missingWorkspace.ok, false);
   assert.equal(missingWorkspace.error, "workspace_required");
+});
+
+test("workspace cleanup after CHECK records audit event and leaves consistent cleanup state", async () => {
+  const paths = await tempPaths();
+  const { plan, workspace } = await preparedWorkspace(paths);
+  const generated = await runJson(["generate", plan.runId, "--adapter", "fixture"], paths);
+  assert.equal(generated.state, "CHECK");
+
+  const cleanup = await runJson(["workspace", "cleanup", plan.runId], paths);
+  assert.equal(cleanup.ok, true);
+  assert.equal(cleanup.cleaned, true);
+  assert.equal(cleanup.state, "CHECK");
+  assert.equal(cleanup.status.pathExists, false);
+  assert.equal(cleanup.event.event_type, "WORKSPACE_CLEANED");
+  assert.equal(cleanup.event.state_before, "CHECK");
+  assert.equal(cleanup.event.state_after, "CHECK");
+  assert.equal(await exists(workspace.workspace.worktreePath), false);
+
+  const afterCleanup = await runJson(["workspace", "status", plan.runId], paths);
+  assert.equal(afterCleanup.workspace.cleanedAt, cleanup.workspace.cleanedAt);
+  assert.equal(afterCleanup.status.pathExists, false);
+
+  const events = await runJson(["events", plan.runId], paths);
+  assert.deepEqual(
+    events.events.map((event) => event.event_type),
+    [
+      "TASK_RECEIVED",
+      "CONTRACT_PRODUCED",
+      "CONTRACT_APPROVED",
+      "WORKSPACE_CREATED",
+      "CODE_PRODUCED",
+      "WORKSPACE_CLEANED"
+    ]
+  );
+
+  await cleanupWorktree(workspace.workspace);
+});
+
+test("workspace cleanup rejected in terminal state has no filesystem or metadata side effects", async () => {
+  const paths = await tempPaths();
+  const { plan, workspace } = await preparedWorkspace(paths);
+  const generated = await runJson(["generate", plan.runId, "--adapter", "fixture"], paths);
+  assert.equal(generated.state, "CHECK");
+
+  const store = createFileRunStore(paths.storePath);
+  const evalResult = await store.appendEvent(plan.runId, { type: "EVAL_COMPLETE", verdict: "PASS" }, "evaluator");
+  assert.equal(evalResult.ok, true);
+  assert.equal(evalResult.event.state_after, "DONE");
+
+  const rejected = await runJson(["workspace", "cleanup", plan.runId], paths);
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error, "workspace_cleanup_rejected_in_terminal_state");
+  assert.equal(rejected.state, "DONE");
+  assert.equal(await exists(workspace.workspace.worktreePath), true);
+
+  const afterReject = await runJson(["workspace", "status", plan.runId], paths);
+  assert.equal(afterReject.workspace.cleanedAt, undefined);
+  assert.equal(afterReject.status.pathExists, true);
+
+  const events = await runJson(["events", plan.runId], paths);
+  assert.equal(events.events.some((event) => event.event_type === "WORKSPACE_CLEANED"), false);
+
+  await cleanupWorktree(workspace.workspace);
 });

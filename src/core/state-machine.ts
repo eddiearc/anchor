@@ -133,6 +133,10 @@ export function transition(state: State | InitialState, event: Event, context: R
     return error("INVALID_TERMINAL_TRANSITION", `Terminal state ${state} does not accept events.`, state, event, context);
   }
 
+  if (isWorkspaceAuditEvent(event) && isActiveState(state)) {
+    return ok(state, context);
+  }
+
   switch (state) {
     case "PLAN":
       return transitionFromPlan(event, context, state);
@@ -141,9 +145,6 @@ export function transition(state: State | InitialState, event: Event, context: R
     case "HUMAN":
       return transitionFromHuman(event, context, state);
     case "BUILD":
-      if (event.type === "WORKSPACE_CREATED" || event.type === "WORKSPACE_CLEANED") {
-        return ok("BUILD", context);
-      }
       if (event.type === "CODE_PRODUCED") {
         return ok("CHECK", context);
       }
@@ -259,6 +260,10 @@ function isActiveState(state: State | InitialState): state is ActiveState {
 
 function isTerminalState(state: State): state is TerminalState {
   return TERMINAL_STATES.includes(state as TerminalState);
+}
+
+function isWorkspaceAuditEvent(event: Event) {
+  return event.type === "WORKSPACE_CREATED" || event.type === "WORKSPACE_CLEANED";
 }
 
 function isMode(mode: string): mode is Mode {

@@ -95,32 +95,34 @@ test("CODE_PRODUCED moves BUILD to CHECK", () => {
   assert.equal(transition("BUILD", codeProduced, context()).state, "CHECK");
 });
 
-test("workspace audit events keep BUILD active", () => {
-  assert.equal(
-    transition(
-      "BUILD",
-      {
-        type: "WORKSPACE_CREATED",
-        base_commit: "a".repeat(40),
-        branch: "anchor/run_1",
-        worktree_path: ".anchor/worktrees/run_1",
-        contract_sha: "b".repeat(64)
-      },
-      context()
-    ).state,
-    "BUILD"
-  );
-  assert.equal(
-    transition(
-      "BUILD",
-      {
-        type: "WORKSPACE_CLEANED",
-        worktree_path: ".anchor/worktrees/run_1"
-      },
-      context()
-    ).state,
-    "BUILD"
-  );
+test("workspace audit events keep active states unchanged", () => {
+  for (const state of ["PLAN", "REVIEW", "HUMAN", "BUILD", "CHECK"]) {
+    assert.equal(
+      transition(
+        state,
+        {
+          type: "WORKSPACE_CREATED",
+          base_commit: "a".repeat(40),
+          branch: "anchor/run_1",
+          worktree_path: ".anchor/worktrees/run_1",
+          contract_sha: "b".repeat(64)
+        },
+        context()
+      ).state,
+      state
+    );
+    assert.equal(
+      transition(
+        state,
+        {
+          type: "WORKSPACE_CLEANED",
+          worktree_path: ".anchor/worktrees/run_1"
+        },
+        context()
+      ).state,
+      state
+    );
+  }
 });
 
 test("EVAL_COMPLETE PASS moves CHECK to DONE", () => {

@@ -334,6 +334,17 @@ async function runWorkspaceCleanup(runId: string | undefined, storePath: string,
   if (!snapshot) {
     return { ok: false, error: "run_not_found", runId, storePath, runsDir, worktreesDir };
   }
+  if (snapshot.state === "DONE" || snapshot.state === "ABORT") {
+    return {
+      ok: false,
+      error: "workspace_cleanup_rejected_in_terminal_state",
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir
+    };
+  }
 
   const workspace = await cleanupGitWorkspace({ runsDir, runId });
   if (!workspace.ok) {

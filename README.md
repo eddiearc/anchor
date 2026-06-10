@@ -724,6 +724,8 @@ The R6 workspace layer records metadata at `.anchor/runs/<runId>/workspace.json`
 
 `anchor workspace create <runId>` is idempotent for the same run. Repeated create returns the existing metadata instead of creating another branch or worktree. `anchor workspace status <runId>` reports whether the path exists, whether it is a git worktree, whether it is clean, and the changed files from `git status --porcelain`. `anchor workspace cleanup <runId>` removes the metadata-recorded worktree and leaves run history intact.
 
+Workspace audit events are active-state no-ops: `WORKSPACE_CREATED(system)` and `WORKSPACE_CLEANED(system)` preserve the current active state, including `BUILD` and `CHECK`. Terminal states still reject further events, so cleanup in `DONE` or `ABORT` is rejected before filesystem or metadata mutation.
+
 There is no provider call, evaluator adapter, retry loop, or real sandbox in R6. The worktree only prepares an isolated git workspace for Generator adapters.
 
 ### Generator Adapter
@@ -813,15 +815,15 @@ validateWorkspacePolicy({
 });
 ```
 
-The run store calls `validateEventSource` before transition evaluation and refuses unauthorized events without writing them. Workspace policy helpers are pure checks only; R7 does not implement a real filesystem sandbox or git diff enforcement.
+The run store calls `validateEventSource` before transition evaluation and refuses unauthorized events without writing them. Workspace policy helpers are pure checks only; R7.1 does not implement a real filesystem sandbox or git diff enforcement.
 
-R7 does not include provider adapters, evaluator adapters, retry loop, real filesystem sandboxing, git diff enforcement, or Web UI.
+R7.1 does not include provider adapters, evaluator adapters, retry loop, real filesystem sandboxing, git diff enforcement, or Web UI.
 
 ---
 
 ## Status
 
-**R7 Generator adapter MVP.** Deterministic `plan`, `contract`, `approve`, `workspace create`, `generate --adapter fixture`, `workspace status`, and `workspace cleanup` commands are in place, with `.anchor/runs/<runId>/contract.yaml`, approved contract SHA events, `.anchor/runs/<runId>/workspace.json`, git worktree metadata, workspace audit events, `.anchor/runs/<runId>/generator-report.json`, `CODE_PRODUCED(generator)` events, status/contract dirty warnings, the deterministic CLI demo, TypeScript project skeleton, transition core, JSONL event-sourced run store, permission/source guards, workspace policy helpers, and test/build baseline. Providers, evaluator adapters, retry loop, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented yet.
+**R7.1 cleanup audit atomicity.** Deterministic `plan`, `contract`, `approve`, `workspace create`, `generate --adapter fixture`, `workspace status`, and `workspace cleanup` commands are in place, with `.anchor/runs/<runId>/contract.yaml`, approved contract SHA events, `.anchor/runs/<runId>/workspace.json`, git worktree metadata, active-state workspace audit events, `.anchor/runs/<runId>/generator-report.json`, `CODE_PRODUCED(generator)` events, status/contract dirty warnings, the deterministic CLI demo, TypeScript project skeleton, transition core, JSONL event-sourced run store, permission/source guards, workspace policy helpers, and test/build baseline. Providers, evaluator adapters, retry loop, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented yet.
 
 ---
 
