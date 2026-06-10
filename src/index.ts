@@ -1,10 +1,12 @@
 export const anchorVersion = "0.0.0";
 
 export * from "./core/agent-runner.js";
+export * from "./core/config.js";
 export * from "./core/contracts.js";
 export * from "./core/evaluators.js";
 export * from "./core/generators.js";
 export * from "./core/permissions.js";
+export * from "./core/planners.js";
 export * from "./core/run-store.js";
 export * from "./core/state-machine.js";
 export * from "./core/tasks.js";
@@ -31,7 +33,7 @@ export function getAnchorHelp() {
     "  anchor workspace cleanup <taskId>",
     "  anchor generate <taskId> --adapter fixture|codex",
     "  anchor evaluate <taskId> --adapter fixture|codex [--verdict pass|fail]",
-    "  anchor run-retry <taskId> --fail-times <n>",
+    "  anchor run-retry <taskId> [--adapter fixture|codex] --fail-times <n>",
     "  anchor demo [--fixture happy|retry]",
     "  anchor status <taskId>",
     "  anchor events <taskId>",

@@ -33,16 +33,18 @@ test("plan creates deterministic contract artifact and waits in HUMAN", async ()
   assert.match(plan.contractPath, new RegExp(`${plan.taskId}/contract\\.yaml$`));
 
   const content = await readFile(plan.contractPath, "utf8");
-  assert.match(content, /^id: "contract_TASK-/m);
-  assert.match(content, /^version: 1/m);
-  assert.match(content, /^  summary: "Add a hello function"/m);
-  assert.match(content, /^mode: "standard"/m);
-  assert.match(content, /^steps:/m);
-  assert.match(content, /^acceptance_criteria:/m);
-  assert.match(content, /^  allowlist:/m);
-  assert.match(content, /^  denylist:/m);
-  assert.match(content, /^commands:/m);
-  assert.match(content, /^non_goals:/m);
+  assert.match(content, /^mode: standard/m);
+  assert.match(content, /^reasoning: Deterministic fixture/m);
+  assert.match(content, /^affected_scope:/m);
+  assert.match(content, /^contract:/m);
+  assert.match(content, /id: "TASK-/m);
+  assert.match(content, /summary: "Add a hello function"/m);
+  assert.match(content, /allowlist:/m);
+  assert.match(content, /denylist:/m);
+  assert.match(content, /steps:/m);
+  assert.match(content, /acceptance:/m);
+  assert.match(content, /completion_gate:/m);
+  assert.match(content, /constraints:/m);
 
   const events = await runJson(["events", plan.taskId], { storePath });
   assert.deepEqual(

@@ -73,6 +73,18 @@ export async function writeContractArtifact(artifactsDir: string, taskId: string
   };
 }
 
+export async function writeRawContract(artifactsDir: string, taskId: string, rawYaml: string): Promise<ContractFile> {
+  const artifactPath = contractPathForTask(artifactsDir, taskId);
+  await mkdir(path.dirname(artifactPath), { recursive: true });
+  await writeFile(artifactPath, rawYaml);
+  return {
+    path: artifactPath,
+    content: rawYaml,
+    sha: sha256(rawYaml),
+    contractId: contractIdForTask(taskId)
+  };
+}
+
 export async function readContractArtifact(artifactsDir: string, taskId: string): Promise<ContractFile | null> {
   const artifactPath = contractPathForTask(artifactsDir, taskId);
   try {

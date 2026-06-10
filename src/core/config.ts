@@ -118,6 +118,8 @@ function parseConfig(raw: string): AnchorConfig {
         i++;
       }
       value = valueLines.join("\n").trimEnd();
+    } else {
+      i++; // advance past single-line value
     }
 
     config[key] = value;
