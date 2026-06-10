@@ -29,7 +29,7 @@ export type EvaluatorOk = {
 
 export type EvaluatorError = {
   ok: false;
-  code: "UNSUPPORTED_ADAPTER" | "WORKSPACE_UNAVAILABLE" | "GENERATOR_REPORT_NOT_FOUND";
+  code: "UNSUPPORTED_ADAPTER" | "INVALID_VERDICT" | "WORKSPACE_UNAVAILABLE" | "GENERATOR_REPORT_NOT_FOUND";
   message: string;
   detail?: string;
 };
@@ -52,6 +52,11 @@ export async function runFixtureEvaluator(input: RunFixtureEvaluatorInput): Prom
     };
   }
 
+  const requestedVerdict = readFixtureVerdict(input.verdict);
+  if (!requestedVerdict.ok) {
+    return requestedVerdict;
+  }
+
   const status = await getWorkspaceGitStatus(input.workspace.worktreePath);
   if (!status.pathExists || !status.isGitWorktree || input.workspace.cleanedAt) {
     return {
@@ -71,27 +76,26 @@ export async function runFixtureEvaluator(input: RunFixtureEvaluatorInput): Prom
     };
   }
 
-  const requestedVerdict = readFixtureVerdict(input.verdict);
   const startedAt = new Date().toISOString();
   const filesInspected = status.changedFiles;
   const testsRun = 1;
-  const testsFailed = requestedVerdict === "PASS" ? 0 : 1;
+  const testsFailed = requestedVerdict.verdict === "PASS" ? 0 : 1;
   const finishedAt = new Date().toISOString();
   const report: EvaluatorReport = {
     adapter: "fixture",
-    verdict: requestedVerdict,
+    verdict: requestedVerdict.verdict,
     runId: input.runId,
     startedAt,
     finishedAt,
     testsRun,
     testsFailed,
     feedback:
-      requestedVerdict === "PASS"
+      requestedVerdict.verdict === "PASS"
         ? "Fixture evaluator accepted the generated worktree changes."
         : "Fixture evaluator rejected the generated worktree changes.",
     filesInspected,
     generatorReportPath: generatorReport,
-    summary: `Fixture evaluator returned ${requestedVerdict} after inspecting ${filesInspected.length} file(s).`
+    summary: `Fixture evaluator returned ${requestedVerdict.verdict} after inspecting ${filesInspected.length} file(s).`
   };
   const reportPath = await writeEvaluatorReport(input.runsDir, input.runId, report);
 
@@ -124,6 +128,18 @@ async function readOptional(filePath: string) {
   }
 }
 
-function readFixtureVerdict(verdict: string | undefined): EvalVerdict {
-  return verdict === "fail" || verdict === "FAIL" ? "FAIL" : "PASS";
+function readFixtureVerdict(verdict: string | undefined): { ok: true; verdict: EvalVerdict } | EvaluatorError {
+  const normalized = verdict?.trim().toLowerCase();
+  if (normalized === "pass") {
+    return { ok: true, verdict: "PASS" };
+  }
+  if (normalized === "fail") {
+    return { ok: true, verdict: "FAIL" };
+  }
+  return {
+    ok: false,
+    code: "INVALID_VERDICT",
+    message: "Fixture evaluator verdict must be pass or fail.",
+    detail: verdict ?? ""
+  };
 }

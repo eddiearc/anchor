@@ -763,7 +763,7 @@ R8 adds a deterministic local fixture evaluator:
 anchor evaluate <runId> --adapter fixture --verdict pass|fail
 ```
 
-The fixture evaluator reads the approved contract, the generator report, and worktree changed files. It does not write source files or mutate the worktree; it writes only `.anchor/runs/<runId>/evaluator-report.json` with:
+The fixture evaluator reads the approved contract, the generator report, and worktree changed files. Verdict input is case-insensitive but must normalize to `pass` or `fail`; missing, empty, or unsupported values return `INVALID_VERDICT` without writing an evaluator report, appending `EVAL_COMPLETE`, or changing run state. It does not write source files or mutate the worktree; it writes only `.anchor/runs/<runId>/evaluator-report.json` with:
 
 - `adapter`
 - `verdict`

@@ -119,7 +119,7 @@ test("fixture evaluator PASS writes report, appends event, and advances CHECK to
 test("fixture evaluator FAIL returns CHECK to BUILD and consumes retry budget", async () => {
   const paths = await tempPaths();
   const { plan, workspace } = await generatedRun(paths);
-  const evaluated = await runJson(["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "fail"], paths);
+  const evaluated = await runJson(["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "FAIL"], paths);
 
   assert.equal(evaluated.ok, true);
   assert.equal(evaluated.state, "BUILD");
@@ -135,6 +135,37 @@ test("fixture evaluator FAIL returns CHECK to BUILD and consumes retry budget", 
   const report = JSON.parse(await readFile(evaluated.reportPath, "utf8"));
   assert.equal(report.verdict, "FAIL");
   assert.equal(report.testsFailed, 1);
+
+  await cleanupWorktree(workspace.workspace);
+});
+
+test("fixture evaluator rejects invalid verdicts without report, event, or state changes", async () => {
+  const paths = await tempPaths();
+  const { plan, workspace } = await generatedRun(paths);
+  const reportPath = path.join(paths.runsDir, plan.runId, "evaluator-report.json");
+  const invalidCases = [
+    ["evaluate", plan.runId, "--adapter", "fixture"],
+    ["evaluate", plan.runId, "--adapter", "fixture", "--verdict", ""],
+    ["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "maybe"],
+    ["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "failed"],
+    ["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "success"],
+    ["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "1"]
+  ];
+
+  for (const args of invalidCases) {
+    const evaluated = await runJson(args, paths);
+    assert.equal(evaluated.ok, false);
+    assert.equal(evaluated.error.code, "INVALID_VERDICT");
+    assert.equal(evaluated.state, "CHECK");
+
+    const status = await runJson(["status", plan.runId], paths);
+    assert.equal(status.state, "CHECK");
+    assert.equal(await exists(reportPath), false);
+    assert.equal(
+      (await runJson(["events", plan.runId], paths)).events.some((event) => event.event_type === "EVAL_COMPLETE"),
+      false
+    );
+  }
 
   await cleanupWorktree(workspace.workspace);
 });
@@ -179,7 +210,7 @@ test("evaluate guards reject non-CHECK, missing report, cleaned workspace, and u
   );
   assert.equal(codeProduced.ok, true);
 
-  const missingReport = await runJson(["evaluate", plan.runId, "--adapter", "fixture"], paths);
+  const missingReport = await runJson(["evaluate", plan.runId, "--adapter", "fixture", "--verdict", "pass"], paths);
   assert.equal(missingReport.ok, false);
   assert.equal(missingReport.error.code, "GENERATOR_REPORT_NOT_FOUND");
   assert.equal((await runJson(["events", plan.runId], paths)).events.some((event) => event.event_type === "EVAL_COMPLETE"), false);

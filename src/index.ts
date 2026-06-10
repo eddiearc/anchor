@@ -31,6 +31,7 @@ export function getAnchorHelp() {
     "",
     "R8 status:",
     "  Deterministic contract artifacts, git worktrees, fixture generation/evaluation, CLI demo, JSONL event store, and permission guards are installed.",
+    "  Fixture evaluation accepts only pass|fail verdict input, case-insensitively.",
     "  Providers, retry loop, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented.",
     "",
     "Store:",
