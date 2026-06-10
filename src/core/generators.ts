@@ -14,6 +14,7 @@ export type GeneratorReport = {
   adapter: GeneratorAdapter;
   fixture: FixtureVariant;
   runId: string;
+  attempt: number;
   startedAt: string;
   finishedAt: string;
   filesChanged: string[];
@@ -46,6 +47,7 @@ export type RunFixtureGeneratorInput = {
   adapter: string;
   fixture?: string;
   attempt: number;
+  reportPath?: string;
 };
 
 export async function runFixtureGenerator(input: RunFixtureGeneratorInput): Promise<GeneratorOk | GeneratorError> {
@@ -82,6 +84,7 @@ export async function runFixtureGenerator(input: RunFixtureGeneratorInput): Prom
     adapter: "fixture",
     fixture,
     runId: input.runId,
+    attempt: input.attempt,
     startedAt,
     finishedAt,
     filesChanged: changedFiles,
@@ -92,7 +95,7 @@ export async function runFixtureGenerator(input: RunFixtureGeneratorInput): Prom
         ? `Fixture generator wrote ${changedFiles.length} changed file(s) for attempt ${input.attempt}.`
         : `Fixture generator produced policy-violating changes for attempt ${input.attempt}.`
   };
-  const reportPath = await writeGeneratorReport(input.runsDir, input.runId, report);
+  const reportPath = await writeGeneratorReport(input.runsDir, input.runId, report, input.reportPath);
 
   if (!policyResult.ok) {
     return {
@@ -112,8 +115,8 @@ export async function runFixtureGenerator(input: RunFixtureGeneratorInput): Prom
   };
 }
 
-export async function writeGeneratorReport(runsDir: string, runId: string, report: GeneratorReport) {
-  const reportPath = generatorReportPath(runsDir, runId);
+export async function writeGeneratorReport(runsDir: string, runId: string, report: GeneratorReport, targetPath?: string) {
+  const reportPath = targetPath ?? generatorReportPath(runsDir, runId);
   await mkdir(path.dirname(reportPath), { recursive: true });
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   return reportPath;
@@ -121,6 +124,10 @@ export async function writeGeneratorReport(runsDir: string, runId: string, repor
 
 export function generatorReportPath(runsDir: string, runId: string) {
   return path.join(runsDir, runId, "generator-report.json");
+}
+
+export function generatorAttemptReportPath(runsDir: string, runId: string, attempt: number) {
+  return path.join(runsDir, runId, "attempts", String(attempt), "generator-report.json");
 }
 
 export function readContractPolicy(contract: string) {

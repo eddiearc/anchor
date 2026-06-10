@@ -11,6 +11,7 @@ export type EvaluatorReport = {
   adapter: EvaluatorAdapter;
   verdict: EvalVerdict;
   runId: string;
+  attempt?: number;
   startedAt: string;
   finishedAt: string;
   testsRun: number;
@@ -41,6 +42,9 @@ export type RunFixtureEvaluatorInput = {
   contract: string;
   adapter: string;
   verdict?: string;
+  attempt?: number;
+  generatorReportPath?: string;
+  reportPath?: string;
 };
 
 export async function runFixtureEvaluator(input: RunFixtureEvaluatorInput): Promise<EvaluatorOk | EvaluatorError> {
@@ -66,7 +70,7 @@ export async function runFixtureEvaluator(input: RunFixtureEvaluatorInput): Prom
     };
   }
 
-  const generatorReport = generatorReportPath(input.runsDir, input.runId);
+  const generatorReport = input.generatorReportPath ?? generatorReportPath(input.runsDir, input.runId);
   const generatorReportContent = await readOptional(generatorReport);
   if (generatorReportContent === null) {
     return {
@@ -85,6 +89,7 @@ export async function runFixtureEvaluator(input: RunFixtureEvaluatorInput): Prom
     adapter: "fixture",
     verdict: requestedVerdict.verdict,
     runId: input.runId,
+    attempt: input.attempt,
     startedAt,
     finishedAt,
     testsRun,
@@ -97,7 +102,7 @@ export async function runFixtureEvaluator(input: RunFixtureEvaluatorInput): Prom
     generatorReportPath: generatorReport,
     summary: `Fixture evaluator returned ${requestedVerdict.verdict} after inspecting ${filesInspected.length} file(s).`
   };
-  const reportPath = await writeEvaluatorReport(input.runsDir, input.runId, report);
+  const reportPath = await writeEvaluatorReport(input.runsDir, input.runId, report, input.reportPath);
 
   return {
     ok: true,
@@ -106,8 +111,8 @@ export async function runFixtureEvaluator(input: RunFixtureEvaluatorInput): Prom
   };
 }
 
-export async function writeEvaluatorReport(runsDir: string, runId: string, report: EvaluatorReport) {
-  const reportPath = evaluatorReportPath(runsDir, runId);
+export async function writeEvaluatorReport(runsDir: string, runId: string, report: EvaluatorReport, targetPath?: string) {
+  const reportPath = targetPath ?? evaluatorReportPath(runsDir, runId);
   await mkdir(path.dirname(reportPath), { recursive: true });
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   return reportPath;
@@ -115,6 +120,10 @@ export async function writeEvaluatorReport(runsDir: string, runId: string, repor
 
 export function evaluatorReportPath(runsDir: string, runId: string) {
   return path.join(runsDir, runId, "evaluator-report.json");
+}
+
+export function evaluatorAttemptReportPath(runsDir: string, runId: string, attempt: number) {
+  return path.join(runsDir, runId, "attempts", String(attempt), "evaluator-report.json");
 }
 
 async function readOptional(filePath: string) {

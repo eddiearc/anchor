@@ -13,8 +13,11 @@ import {
   readWorkspaceStatus,
   runFixtureGenerator,
   runFixtureEvaluator,
+  generatorAttemptReportPath,
+  evaluatorAttemptReportPath,
   writeContractArtifact,
   type Event,
+  type State,
   type StoredEvent
 } from "../index.js";
 
@@ -71,6 +74,10 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
     return json(await runEvaluate(rest, storePath, runsDir, worktreesDir));
   }
 
+  if (command === "run-retry") {
+    return json(await runRetry(rest, storePath, runsDir, worktreesDir));
+  }
+
   if (command === "demo") {
     return json(await runDemo(rest, storePath));
   }
@@ -86,6 +93,182 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   return {
     exitCode: 1,
     output: [`Unknown command: ${command}`, "", getAnchorHelp()].join("\n")
+  };
+}
+
+async function runRetry(args: string[], storePath: string, runsDir: string, worktreesDir: string) {
+  const runId = args[0];
+  if (!runId) {
+    return { ok: false, error: "run_id_required", storePath, runsDir, worktreesDir };
+  }
+
+  const failTimesResult = readFailTimes(args);
+  if (!failTimesResult.ok) {
+    return { ok: false, command: "run-retry", error: failTimesResult, runId, storePath, runsDir, worktreesDir };
+  }
+
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(runId);
+  if (!snapshot) {
+    return { ok: false, error: "run_not_found", runId, storePath, runsDir, worktreesDir };
+  }
+  if (snapshot.state !== "BUILD" && snapshot.state !== "CHECK") {
+    return {
+      ok: false,
+      error: "run_retry_requires_build_or_check_state",
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir
+    };
+  }
+
+  const workspace = await readWorkspaceStatus(runsDir, runId);
+  if (!workspace || workspace.metadata.cleanedAt || !workspace.status.pathExists || !workspace.status.isGitWorktree) {
+    return {
+      ok: false,
+      error: "workspace_required",
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir,
+      workspace
+    };
+  }
+
+  const contract = await readContractArtifact(runsDir, runId);
+  if (!contract) {
+    return { ok: false, error: "contract_not_found", runId, state: snapshot.state, storePath, runsDir, worktreesDir };
+  }
+
+  const steps = [];
+  let state: State = snapshot.state;
+  while (state === "BUILD" || state === "CHECK") {
+    if (state === "BUILD") {
+      const events = await store.listEvents(runId);
+      const attempt = events.filter((event) => event.event_type === "CODE_PRODUCED").length + 1;
+      const result = await runFixtureGenerator({
+        runId,
+        runsDir,
+        workspace: workspace.metadata,
+        contract: contract.content,
+        adapter: "fixture",
+        attempt,
+        reportPath: generatorAttemptReportPath(runsDir, runId, attempt)
+      });
+      if (!result.ok) {
+        return { ok: false, command: "run-retry", error: result, runId, state, storePath, runsDir, worktreesDir, steps };
+      }
+
+      const eventResult = await store.appendEvent(
+        runId,
+        {
+          type: "CODE_PRODUCED",
+          report_path: result.reportPath,
+          files_changed: result.filesChanged,
+          attempt
+        },
+        "generator"
+      );
+      if (!eventResult.ok) {
+        return {
+          ok: false,
+          command: "run-retry",
+          error: eventResult,
+          runId,
+          state,
+          storePath,
+          runsDir,
+          worktreesDir,
+          reportPath: result.reportPath,
+          steps
+        };
+      }
+
+      steps.push({
+        role: "generator",
+        attempt,
+        reportPath: result.reportPath,
+        filesChanged: result.filesChanged,
+        event: summarizeEvent(eventResult.event)
+      });
+      state = eventResult.event.state_after;
+      continue;
+    }
+
+    const events = await store.listEvents(runId);
+    const attempt = events.filter((event) => event.event_type === "EVAL_COMPLETE").length + 1;
+    const latestCode = latestCodeProduced(events);
+    const verdict = attempt <= failTimesResult.failTimes ? "fail" : "pass";
+    const result = await runFixtureEvaluator({
+      runId,
+      runsDir,
+      workspace: workspace.metadata,
+      contract: contract.content,
+      adapter: "fixture",
+      verdict,
+      attempt,
+      generatorReportPath: latestCode?.payload.report_path,
+      reportPath: evaluatorAttemptReportPath(runsDir, runId, attempt)
+    });
+    if (!result.ok) {
+      return { ok: false, command: "run-retry", error: result, runId, state, storePath, runsDir, worktreesDir, steps };
+    }
+
+    const eventResult = await store.appendEvent(
+      runId,
+      {
+        type: "EVAL_COMPLETE",
+        verdict: result.report.verdict,
+        attempt,
+        report_path: result.reportPath,
+        tests_run: result.report.testsRun,
+        tests_failed: result.report.testsFailed,
+        feedback: result.report.feedback
+      },
+      "evaluator"
+    );
+    if (!eventResult.ok) {
+      return {
+        ok: false,
+        command: "run-retry",
+        error: eventResult,
+        runId,
+        state,
+        storePath,
+        runsDir,
+        worktreesDir,
+        reportPath: result.reportPath,
+        steps
+      };
+    }
+
+    steps.push({
+      role: "evaluator",
+      attempt,
+      reportPath: result.reportPath,
+      verdict: result.report.verdict,
+      testsRun: result.report.testsRun,
+      testsFailed: result.report.testsFailed,
+      event: summarizeEvent(eventResult.event)
+    });
+    state = eventResult.event.state_after;
+  }
+
+  const finalSnapshot = await store.getCurrentState(runId);
+  return {
+    ok: true,
+    command: "run-retry",
+    runId,
+    state: finalSnapshot?.state ?? state,
+    context: finalSnapshot?.context ?? snapshot.context,
+    failTimes: failTimesResult.failTimes,
+    storePath,
+    runsDir,
+    worktreesDir,
+    steps
   };
 }
 
@@ -711,6 +894,26 @@ function readFixture(args: string[]) {
 function readOption(args: string[], option: string) {
   const index = args.indexOf(option);
   return index === -1 ? undefined : args[index + 1];
+}
+
+function readFailTimes(args: string[]): { ok: true; failTimes: number } | { ok: false; code: "INVALID_FAIL_TIMES"; message: string; detail: string } {
+  const value = readOption(args, "--fail-times") ?? "0";
+  if (!/^\d+$/.test(value)) {
+    return {
+      ok: false,
+      code: "INVALID_FAIL_TIMES",
+      message: "--fail-times must be a non-negative integer.",
+      detail: value
+    };
+  }
+  return { ok: true, failTimes: Number(value) };
+}
+
+function latestCodeProduced(events: StoredEvent[]) {
+  const codeEvents = events.filter(
+    (event): event is StoredEvent & { payload: Extract<Event, { type: "CODE_PRODUCED" }> } => event.event_type === "CODE_PRODUCED"
+  );
+  return codeEvents[codeEvents.length - 1] ?? null;
 }
 
 function fixtureEvents(fixture: "happy" | "retry"): Array<{ emittedBy: string; event: Event }> {
