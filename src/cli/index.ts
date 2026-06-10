@@ -12,6 +12,7 @@ import {
   readContractArtifact,
   readWorkspaceStatus,
   runFixtureGenerator,
+  runFixtureEvaluator,
   writeContractArtifact,
   type Event,
   type StoredEvent
@@ -66,6 +67,10 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
     return json(await runGenerate(rest, storePath, runsDir, worktreesDir));
   }
 
+  if (command === "evaluate") {
+    return json(await runEvaluate(rest, storePath, runsDir, worktreesDir));
+  }
+
   if (command === "demo") {
     return json(await runDemo(rest, storePath));
   }
@@ -81,6 +86,113 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   return {
     exitCode: 1,
     output: [`Unknown command: ${command}`, "", getAnchorHelp()].join("\n")
+  };
+}
+
+async function runEvaluate(args: string[], storePath: string, runsDir: string, worktreesDir: string) {
+  const runId = args[0];
+  if (!runId) {
+    return { ok: false, error: "run_id_required", storePath, runsDir, worktreesDir };
+  }
+
+  const adapter = readOption(args, "--adapter") ?? "fixture";
+  const verdict = readOption(args, "--verdict");
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(runId);
+  if (!snapshot) {
+    return { ok: false, error: "run_not_found", runId, storePath, runsDir, worktreesDir };
+  }
+  if (snapshot.state !== "CHECK") {
+    return {
+      ok: false,
+      error: "evaluate_requires_check_state",
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir
+    };
+  }
+
+  const workspace = await readWorkspaceStatus(runsDir, runId);
+  if (!workspace || workspace.metadata.cleanedAt || !workspace.status.pathExists || !workspace.status.isGitWorktree) {
+    return {
+      ok: false,
+      error: "workspace_required",
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir,
+      workspace
+    };
+  }
+
+  const contract = await readContractArtifact(runsDir, runId);
+  if (!contract) {
+    return { ok: false, error: "contract_not_found", runId, state: snapshot.state, storePath, runsDir, worktreesDir };
+  }
+
+  const result = await runFixtureEvaluator({
+    runId,
+    runsDir,
+    workspace: workspace.metadata,
+    contract: contract.content,
+    adapter,
+    verdict
+  });
+  if (!result.ok) {
+    return {
+      ok: false,
+      command: "evaluate",
+      error: result,
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir
+    };
+  }
+
+  const eventResult = await store.appendEvent(
+    runId,
+    {
+      type: "EVAL_COMPLETE",
+      verdict: result.report.verdict,
+      report_path: result.reportPath,
+      tests_run: result.report.testsRun,
+      tests_failed: result.report.testsFailed,
+      feedback: result.report.feedback
+    },
+    "evaluator"
+  );
+  if (!eventResult.ok) {
+    return {
+      ok: false,
+      command: "evaluate",
+      error: eventResult,
+      runId,
+      state: snapshot.state,
+      storePath,
+      runsDir,
+      worktreesDir,
+      reportPath: result.reportPath
+    };
+  }
+
+  return {
+    ok: true,
+    command: "evaluate",
+    runId,
+    state: (await store.getCurrentState(runId))?.state ?? eventResult.event.state_after,
+    storePath,
+    runsDir,
+    worktreesDir,
+    reportPath: result.reportPath,
+    verdict: result.report.verdict,
+    testsRun: result.report.testsRun,
+    testsFailed: result.report.testsFailed,
+    event: summarizeEvent(eventResult.event)
   };
 }
 

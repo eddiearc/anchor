@@ -1,6 +1,7 @@
 export const anchorVersion = "0.0.0";
 
 export * from "./core/contracts.js";
+export * from "./core/evaluators.js";
 export * from "./core/generators.js";
 export * from "./core/permissions.js";
 export * from "./core/run-store.js";
@@ -23,13 +24,14 @@ export function getAnchorHelp() {
     "  anchor workspace status <runId>",
     "  anchor workspace cleanup <runId>",
     "  anchor generate <runId> --adapter fixture",
+    "  anchor evaluate <runId> --adapter fixture --verdict pass|fail",
     "  anchor demo [--fixture happy|retry]",
     "  anchor status <runId>",
     "  anchor events <runId>",
     "",
-    "R7 status:",
-    "  Deterministic contract artifacts, git worktrees, fixture generation, CLI demo, JSONL event store, and permission guards are installed.",
-    "  Providers, evaluator adapters, retry loop, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented.",
+    "R8 status:",
+    "  Deterministic contract artifacts, git worktrees, fixture generation/evaluation, CLI demo, JSONL event store, and permission guards are installed.",
+    "  Providers, retry loop, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented.",
     "",
     "Store:",
     "  Set ANCHOR_STORE_PATH to override the default .anchor/runs.jsonl store.",

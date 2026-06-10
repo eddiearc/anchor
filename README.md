@@ -655,7 +655,7 @@ Topics to discuss before implementation:
 
 ## Development
 
-Anchor is currently at R7: a TypeScript-first deterministic CLI MVP backed by contract artifacts, human approval SHA events, git worktree workspace management, deterministic fixture generation, the state machine core, event-sourced JSONL run store, and permission guard helpers.
+Anchor is currently at R8: a TypeScript-first deterministic CLI MVP backed by contract artifacts, human approval SHA events, git worktree workspace management, deterministic fixture generation/evaluation, the state machine core, event-sourced JSONL run store, and permission guard helpers.
 
 ```bash
 pnpm install
@@ -681,6 +681,7 @@ ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor approve <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor workspace create <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor generate <runId> --adapter fixture
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor evaluate <runId> --adapter fixture --verdict pass
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor workspace status <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor workspace cleanup <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor status <runId>
@@ -689,7 +690,7 @@ ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor demo
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor demo --fixture retry
 ```
 
-CLI command output is stable JSON for `plan`, `contract`, `approve`, `workspace create`, `generate`, `workspace status`, `workspace cleanup`, `demo`, `status`, and `events`. `plan` creates a standard-mode contract and leaves the run in `HUMAN`. `approve` reads the contract artifact, computes its SHA-256, and appends `CONTRACT_APPROVED` by `human` with `contract_id` and `contract_sha`, moving the run to `BUILD`. `workspace create` requires that approved `BUILD` state, creates an isolated git worktree and branch, writes workspace metadata, and appends `WORKSPACE_CREATED` by `system`. `generate` requires `BUILD`, an active workspace, and an approved contract; the fixture adapter writes inside the worktree, validates changed files against the contract allowlist/denylist, writes a generator report, and appends `CODE_PRODUCED(generator)` only on policy success. `workspace cleanup` removes only the metadata-recorded worktree path, writes a cleanup tombstone, and appends `WORKSPACE_CLEANED` by `system`. `status` and `contract` report a dirty warning when the current artifact SHA differs from the approved SHA.
+CLI command output is stable JSON for `plan`, `contract`, `approve`, `workspace create`, `generate`, `evaluate`, `workspace status`, `workspace cleanup`, `demo`, `status`, and `events`. `plan` creates a standard-mode contract and leaves the run in `HUMAN`. `approve` reads the contract artifact, computes its SHA-256, and appends `CONTRACT_APPROVED` by `human` with `contract_id` and `contract_sha`, moving the run to `BUILD`. `workspace create` requires that approved `BUILD` state, creates an isolated git worktree and branch, writes workspace metadata, and appends `WORKSPACE_CREATED` by `system`. `generate` requires `BUILD`, an active workspace, and an approved contract; the fixture adapter writes inside the worktree, validates changed files against the contract allowlist/denylist, writes a generator report, and appends `CODE_PRODUCED(generator)` only on policy success. `evaluate` requires `CHECK`, an active workspace, a contract, and a generator report; the fixture adapter inspects worktree changes, writes an evaluator report, and appends `EVAL_COMPLETE(evaluator)`. `workspace cleanup` removes only the metadata-recorded worktree path, writes a cleanup tombstone, and appends `WORKSPACE_CLEANED` by `system`. `status` and `contract` report a dirty warning when the current artifact SHA differs from the approved SHA.
 
 `events` includes `seq`, `event_type`, `payload`, `emitted_by`, `state_before`, and `state_after`.
 
@@ -754,6 +755,30 @@ Then it appends `CODE_PRODUCED(generator)` with the report path, files changed, 
 
 For policy testing, `anchor generate <runId> --adapter fixture --fixture outside` writes outside the allowlist. That path writes a failure report but does not append `CODE_PRODUCED` and does not advance the run.
 
+### Evaluator Adapter
+
+R8 adds a deterministic local fixture evaluator:
+
+```bash
+anchor evaluate <runId> --adapter fixture --verdict pass|fail
+```
+
+The fixture evaluator reads the approved contract, the generator report, and worktree changed files. It does not write source files or mutate the worktree; it writes only `.anchor/runs/<runId>/evaluator-report.json` with:
+
+- `adapter`
+- `verdict`
+- `runId`
+- `startedAt`
+- `finishedAt`
+- `testsRun`
+- `testsFailed`
+- `feedback`
+- `filesInspected`
+- `generatorReportPath`
+- `summary`
+
+Then it appends `EVAL_COMPLETE(evaluator)` with verdict, report path, tests run, tests failed, and feedback. `--verdict pass` moves `CHECK -> DONE`. `--verdict fail` moves `CHECK -> BUILD` while retries remain, or `CHECK -> HUMAN` when retry budget is exhausted. R8 does not automatically rerun Generator.
+
 ### State Machine Core
 
 The R1 core exports a pure `transition(state, event, context)` function and TypeScript types from `src/core/state-machine.ts`.
@@ -815,15 +840,15 @@ validateWorkspacePolicy({
 });
 ```
 
-The run store calls `validateEventSource` before transition evaluation and refuses unauthorized events without writing them. Workspace policy helpers are pure checks only; R7.1 does not implement a real filesystem sandbox or git diff enforcement.
+The run store calls `validateEventSource` before transition evaluation and refuses unauthorized events without writing them. Workspace policy helpers are pure checks only; R8 does not implement a real filesystem sandbox or git diff enforcement.
 
-R7.1 does not include provider adapters, evaluator adapters, retry loop, real filesystem sandboxing, git diff enforcement, or Web UI.
+R8 does not include provider adapters, retry loop, real filesystem sandboxing, git diff enforcement, or Web UI.
 
 ---
 
 ## Status
 
-**R7.1 cleanup audit atomicity.** Deterministic `plan`, `contract`, `approve`, `workspace create`, `generate --adapter fixture`, `workspace status`, and `workspace cleanup` commands are in place, with `.anchor/runs/<runId>/contract.yaml`, approved contract SHA events, `.anchor/runs/<runId>/workspace.json`, git worktree metadata, active-state workspace audit events, `.anchor/runs/<runId>/generator-report.json`, `CODE_PRODUCED(generator)` events, status/contract dirty warnings, the deterministic CLI demo, TypeScript project skeleton, transition core, JSONL event-sourced run store, permission/source guards, workspace policy helpers, and test/build baseline. Providers, evaluator adapters, retry loop, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented yet.
+**R8 Evaluator adapter MVP.** Deterministic `plan`, `contract`, `approve`, `workspace create`, `generate --adapter fixture`, `evaluate --adapter fixture`, `workspace status`, and `workspace cleanup` commands are in place, with `.anchor/runs/<runId>/contract.yaml`, approved contract SHA events, `.anchor/runs/<runId>/workspace.json`, git worktree metadata, active-state workspace audit events, `.anchor/runs/<runId>/generator-report.json`, `.anchor/runs/<runId>/evaluator-report.json`, `CODE_PRODUCED(generator)` events, `EVAL_COMPLETE(evaluator)` events, status/contract dirty warnings, the deterministic CLI demo, TypeScript project skeleton, transition core, JSONL event-sourced run store, permission/source guards, workspace policy helpers, and test/build baseline. Providers, retry loop, real filesystem sandboxing, git diff enforcement, and Web UI are not implemented yet.
 
 ---
 

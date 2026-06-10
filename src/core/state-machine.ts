@@ -72,6 +72,10 @@ export type CodeProducedEvent = {
 export type EvalCompleteEvent = {
   type: "EVAL_COMPLETE";
   verdict: EvalVerdict;
+  report_path?: string;
+  tests_run?: number;
+  tests_failed?: number;
+  feedback?: string;
 };
 
 export type Event =
