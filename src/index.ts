@@ -7,6 +7,7 @@ export * from "./core/evaluators.js";
 export * from "./core/generators.js";
 export * from "./core/permissions.js";
 export * from "./core/planners.js";
+export * from "./core/providers.js";
 export * from "./core/reviewers.js";
 export * from "./core/run-store.js";
 export * from "./core/state-machine.js";

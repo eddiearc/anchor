@@ -607,7 +607,7 @@ async function runGenerate(args: string[], storePath: string, tasksDir: string, 
     return { ok: false, error: "task_id_required", storePath, tasksDir, worktreesDir };
   }
 
-  const adapter = readOption(args, "--adapter") ?? "fixture";
+  const adapter = readOption(args, "--provider") ?? readOption(args, "--adapter") ?? "fixture";
   const fixture = readOption(args, "--fixture");
   const allowNetwork = isOptionPresent(args, "--allow-network");
   const store = createFileRunStore(storePath);
@@ -649,7 +649,7 @@ async function runGenerate(args: string[], storePath: string, tasksDir: string, 
 
   const eventResult = await store.appendEvent(
     taskId,
-    { type: "CODE_PRODUCED", report_path: result.reportPath, files_changed: result.filesChanged, attempt },
+    { type: "CODE_PRODUCED", report_path: result.reportPath, files_changed: result.filesChanged, attempt, provider: result.report.provider },
     "generator"
   );
   if (!eventResult.ok) {
@@ -690,7 +690,7 @@ async function runEvaluate(args: string[], storePath: string, tasksDir: string, 
     return { ok: false, error: "task_id_required", storePath, tasksDir, worktreesDir };
   }
 
-  const adapter = readOption(args, "--adapter") ?? "fixture";
+  const adapter = readOption(args, "--provider") ?? readOption(args, "--adapter") ?? "fixture";
   const verdict = readOption(args, "--verdict");
   const store = createFileRunStore(storePath);
   const snapshot = await store.getCurrentState(taskId);
@@ -731,7 +731,8 @@ async function runEvaluate(args: string[], storePath: string, tasksDir: string, 
       report_path: result.reportPath,
       tests_run: result.report.testsRun,
       tests_failed: result.report.testsFailed,
-      feedback: result.report.feedback
+      feedback: result.report.feedback,
+      provider: result.report.provider
     },
     "evaluator"
   );

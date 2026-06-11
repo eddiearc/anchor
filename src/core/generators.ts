@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { validateWorkspacePolicy, type PermissionResult } from "./permissions.js";
+import { resolveProvider, type ProviderDefinition, type ProviderError } from "./providers.js";
 import { getWorkspaceGitStatus, type WorkspaceMetadata } from "./workspaces.js";
 import {
   type CommandRunner,
@@ -26,6 +27,7 @@ export type FixtureVariant = "allowed" | "outside";
 
 export type GeneratorReport = {
   adapter: GeneratorAdapter;
+  provider: GeneratorAdapter;
   fixture?: FixtureVariant;
   taskId: string;
   attempt: number;
@@ -53,6 +55,8 @@ export type GeneratorError = {
   ok: false;
   code:
     | "UNSUPPORTED_ADAPTER"
+    | "UNKNOWN_PROVIDER"
+    | "UNSUPPORTED_PROVIDER_ROLE"
     | "WORKSPACE_UNAVAILABLE"
     | "POLICY_VIOLATION"
     | "GIT_COMMAND_FAILED"
@@ -82,16 +86,32 @@ export async function runGenerator(
   input: RunGeneratorInput,
   runner: CommandRunner = defaultCommandRunner
 ): Promise<GeneratorOk | GeneratorError> {
-  if (input.adapter === "fixture") {
-    return runFixtureGenerator(input);
-  }
-  if (input.adapter === "codex") {
-    return runCodexGenerator(input, runner);
-  }
+  const provider = resolveProvider(generatorProviders(runner), input.adapter, "generator");
+  if ("ok" in provider) return generatorProviderError(provider);
+  return provider.run(input);
+}
+
+function generatorProviders(runner: CommandRunner): Array<ProviderDefinition<RunGeneratorInput, GeneratorOk | GeneratorError>> {
+  return [
+    {
+      id: "fixture",
+      roles: ["generator"],
+      run: (input) => runFixtureGenerator(input)
+    },
+    {
+      id: "codex",
+      roles: ["generator"],
+      run: (input) => runCodexGenerator(input, runner)
+    }
+  ];
+}
+
+function generatorProviderError(error: ProviderError): GeneratorError {
   return {
     ok: false,
-    code: "UNSUPPORTED_ADAPTER",
-    message: `Unsupported generator adapter: ${input.adapter}`
+    code: error.code,
+    message: error.message,
+    detail: JSON.stringify({ provider: error.provider, role: error.role, availableProviders: error.availableProviders })
   };
 }
 
@@ -127,6 +147,7 @@ export async function runFixtureGenerator(input: RunGeneratorInput): Promise<Gen
   const finishedAt = new Date().toISOString();
   const report: GeneratorReport = {
     adapter: "fixture",
+    provider: "fixture",
     fixture,
     taskId: input.taskId,
     attempt: input.attempt,
@@ -210,6 +231,7 @@ async function runCodexGenerator(
   const finishedAt = new Date().toISOString();
   const report: GeneratorReport = {
     adapter: "codex",
+    provider: "codex",
     taskId: input.taskId,
     attempt: input.attempt,
     startedAt,
@@ -300,6 +322,7 @@ async function writeCodexFailureReport(params: {
   const status = await getWorkspaceGitStatus(params.input.workspace.worktreePath);
   const report: GeneratorReport = {
     adapter: "codex",
+    provider: "codex",
     taskId: params.input.taskId,
     attempt: params.input.attempt,
     startedAt: params.startedAt,

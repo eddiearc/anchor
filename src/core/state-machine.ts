@@ -67,6 +67,7 @@ export type CodeProducedEvent = {
   report_path: string;
   files_changed: string[];
   attempt: number;
+  provider?: string;
 };
 
 export type EvalCompleteEvent = {
@@ -77,6 +78,7 @@ export type EvalCompleteEvent = {
   tests_run?: number;
   tests_failed?: number;
   feedback?: string;
+  provider?: string;
 };
 
 export type RunCompleteEvent = {

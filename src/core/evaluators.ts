@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getWorkspaceGitStatus, type WorkspaceMetadata } from "./workspaces.js";
 import { generatorReportPath } from "./generators.js";
+import { resolveProvider, type ProviderDefinition, type ProviderError } from "./providers.js";
 import { type EvalVerdict } from "./state-machine.js";
 import {
   type CommandRunner,
@@ -19,6 +20,7 @@ export type EvaluatorAdapter = "fixture" | "codex";
 
 export type EvaluatorReport = {
   adapter: EvaluatorAdapter;
+  provider: EvaluatorAdapter;
   verdict: EvalVerdict;
   taskId: string;
   attempt?: number;
@@ -47,6 +49,8 @@ export type EvaluatorError = {
   ok: false;
   code:
     | "UNSUPPORTED_ADAPTER"
+    | "UNKNOWN_PROVIDER"
+    | "UNSUPPORTED_PROVIDER_ROLE"
     | "INVALID_VERDICT"
     | "WORKSPACE_UNAVAILABLE"
     | "GENERATOR_REPORT_NOT_FOUND"
@@ -75,16 +79,32 @@ export async function runEvaluator(
   input: RunEvaluatorInput,
   runner: CommandRunner = defaultCommandRunner
 ): Promise<EvaluatorOk | EvaluatorError> {
-  if (input.adapter === "fixture") {
-    return runFixtureEvaluator(input);
-  }
-  if (input.adapter === "codex") {
-    return runCodexEvaluator(input, runner);
-  }
+  const provider = resolveProvider(evaluatorProviders(runner), input.adapter, "evaluator");
+  if ("ok" in provider) return evaluatorProviderError(provider);
+  return provider.run(input);
+}
+
+function evaluatorProviders(runner: CommandRunner): Array<ProviderDefinition<RunEvaluatorInput, EvaluatorOk | EvaluatorError>> {
+  return [
+    {
+      id: "fixture",
+      roles: ["evaluator"],
+      run: (input) => runFixtureEvaluator(input)
+    },
+    {
+      id: "codex",
+      roles: ["evaluator"],
+      run: (input) => runCodexEvaluator(input, runner)
+    }
+  ];
+}
+
+function evaluatorProviderError(error: ProviderError): EvaluatorError {
   return {
     ok: false,
-    code: "UNSUPPORTED_ADAPTER",
-    message: `Unsupported evaluator adapter: ${input.adapter}`
+    code: error.code,
+    message: error.message,
+    detail: JSON.stringify({ provider: error.provider, role: error.role, availableProviders: error.availableProviders })
   };
 }
 
@@ -130,6 +150,7 @@ export async function runFixtureEvaluator(
   const finishedAt = new Date().toISOString();
   const report: EvaluatorReport = {
     adapter: "fixture",
+    provider: "fixture",
     verdict: requestedVerdict.verdict,
     taskId: input.taskId,
     attempt: input.attempt,
@@ -218,6 +239,7 @@ async function runCodexEvaluator(
   const filesInspected = (await getWorkspaceGitStatus(input.workspace.worktreePath)).changedFiles;
   const report: EvaluatorReport = {
     adapter: "codex",
+    provider: "codex",
     verdict: verdictResult.verdict,
     taskId: input.taskId,
     attempt: input.attempt,
