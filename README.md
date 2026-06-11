@@ -46,12 +46,12 @@ cd "$FIXTURE_REPO"
 
 "$PREFIX/bin/anchor" demo
 PLAN_JSON="$("$PREFIX/bin/anchor" plan "test task")"
-RUN_ID="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(0, "utf8")).runId)' <<<"$PLAN_JSON")"
-"$PREFIX/bin/anchor" status "$RUN_ID"
-"$PREFIX/bin/anchor" events "$RUN_ID"
+TASK_ID="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(0, "utf8")).taskId)' <<<"$PLAN_JSON")"
+"$PREFIX/bin/anchor" status "$TASK_ID"
+"$PREFIX/bin/anchor" events "$TASK_ID"
 ```
 
-The installed CLI writes run data under the current repository's `.anchor/` directory by default. This smoke does not publish to npm, does not run a real Codex end-to-end flow, and does not implement the Codex Evaluator adapter.
+The installed CLI writes task and event data under the current repository's `.anchor/` directory by default. This smoke does not publish to npm, does not run a real Codex end-to-end flow, and does not implement the Codex Evaluator adapter.
 
 ---
 
