@@ -66,7 +66,7 @@ export async function runAgent(
         return {
           exitCode: readExitCode(error),
           stdout: readProcessOutput(error, "stdout"),
-          stderr: readProcessOutput(error, "stderr") || (error instanceof Error ? error.message : String(error))
+          stderr: readProcessOutput(error, "stderr") || fallbackProcessError(error)
         };
       }
 
@@ -75,7 +75,7 @@ export async function runAgent(
         return {
           exitCode: readExitCode(error),
           stdout: readProcessOutput(error, "stdout"),
-          stderr: readProcessOutput(error, "stderr") || (error instanceof Error ? error.message : String(error))
+          stderr: readProcessOutput(error, "stderr") || fallbackProcessError(error)
         };
       }
 
@@ -88,19 +88,13 @@ export async function runAgent(
   return {
     exitCode: readExitCode(lastError),
     stdout: readProcessOutput(lastError, "stdout"),
-    stderr: readProcessOutput(lastError, "stderr") || (lastError instanceof Error ? (lastError as Error).message : String(lastError))
+    stderr: readProcessOutput(lastError, "stderr") || fallbackProcessError(lastError)
   };
 }
 
 export function buildCodexArgv(worktreePath: string, prompt: string, allowNetwork = false): string[] {
-  const customArgv = process.env.ANCHOR_CODEX_ARGV_JSON;
-  if (customArgv) {
-    const parsed = JSON.parse(customArgv);
-    if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
-      throw new Error("ANCHOR_CODEX_ARGV_JSON must be a JSON string array.");
-    }
-    return [...parsed, prompt];
-  }
+  const customArgv = readCustomArgv("ANCHOR_CODEX_ARGV_JSON", prompt);
+  if (customArgv) return customArgv;
   const base = [
     "exec",
     "--cd", worktreePath,
@@ -120,6 +114,39 @@ export function buildCodexArgv(worktreePath: string, prompt: string, allowNetwor
 
 export function codexCommand(): string {
   return process.env.ANCHOR_CODEX_COMMAND ?? "codex";
+}
+
+export function buildPiArgv(worktreePath: string, prompt: string, allowNetwork = false): string[] {
+  const customArgv = readCustomArgv("ANCHOR_PI_ARGV_JSON", prompt);
+  if (customArgv) return customArgv;
+  const base = [
+    "--print",
+    "--no-session",
+    "--no-context-files",
+    "--tools",
+    "read,bash,edit,write,grep,find,ls"
+  ];
+
+  if (!allowNetwork) {
+    base.push("--offline");
+  }
+
+  base.push(prompt);
+  return base;
+}
+
+export function piCommand(): string {
+  return process.env.ANCHOR_PI_COMMAND ?? "pi";
+}
+
+function readCustomArgv(envKey: string, prompt: string): string[] | null {
+  const customArgv = process.env[envKey];
+  if (!customArgv) return null;
+  const parsed = JSON.parse(customArgv);
+  if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
+    throw new Error(`${envKey} must be a JSON string array.`);
+  }
+  return [...parsed, prompt];
 }
 
 export function isCommandUnavailable(error: unknown) {
@@ -162,6 +189,10 @@ export function readProcessOutput(error: unknown, key: "stdout" | "stderr") {
     if (typeof record[key] === "string") return record[key];
   }
   return "";
+}
+
+function fallbackProcessError(error: unknown) {
+  return `Command runner failed with exit code ${readExitCode(error)}.`;
 }
 
 export function summarizeOutput(output: string) {

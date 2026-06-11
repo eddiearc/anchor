@@ -70,18 +70,18 @@ test("fixture generator and evaluator use provider interface and emit provider m
 test("unknown generator and evaluator providers return stable JSON errors", async () => {
   const { paths, taskId } = await setupBuildTask();
 
-  const unknownGenerate = await runJson(["generate", taskId, "--provider", "pi"], paths);
+  const unknownGenerate = await runJson(["generate", taskId, "--provider", "unknown-provider"], paths);
   assert.equal(unknownGenerate.exitCode, 1);
   assert.equal(unknownGenerate.json.ok, false);
   assert.equal(unknownGenerate.json.error.code, "UNKNOWN_PROVIDER");
-  assert.match(unknownGenerate.json.error.message, /pi/);
+  assert.match(unknownGenerate.json.error.message, /unknown-provider/);
 
   const generate = await runJson(["generate", taskId, "--adapter", "fixture"], paths);
   assert.equal(generate.exitCode, 0);
 
-  const unknownEvaluate = await runJson(["evaluate", taskId, "--provider", "pi", "--verdict", "pass"], paths);
+  const unknownEvaluate = await runJson(["evaluate", taskId, "--provider", "unknown-provider", "--verdict", "pass"], paths);
   assert.equal(unknownEvaluate.exitCode, 1);
   assert.equal(unknownEvaluate.json.ok, false);
   assert.equal(unknownEvaluate.json.error.code, "UNKNOWN_PROVIDER");
-  assert.match(unknownEvaluate.json.error.message, /pi/);
+  assert.match(unknownEvaluate.json.error.message, /unknown-provider/);
 });

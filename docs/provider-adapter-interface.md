@@ -108,6 +108,18 @@ Codex output is normalized to `GeneratorReport` and `CODE_PRODUCED` in the same 
 
 See [docs/codex-provider.md](docs/codex-provider.md) for the Codex-specific runner contract.
 
-## Future Pi Provider
+## Pi Generator Provider
 
-Pi should implement this same provider interface. It should normalize outputs to `GeneratorReport` / `EvaluatorReport` and event payloads, then let Anchor core continue to operate on roles, reports, events, and states.
+The Pi generator backend is also a provider implementation, not a core workflow branch. `anchor generate <taskId> --provider pi` and the backward-compatible `--adapter pi` both resolve `pi` through the generator provider registry before invoking the Pi runner path.
+
+Pi receives the same Anchor-owned inputs as Codex:
+
+- approved contract path/content
+- task id
+- workspace path
+- workspace policy summary derived from the contract
+- report expectations
+
+Pi output is normalized to `GeneratorReport` and `CODE_PRODUCED` in the same shape as other generator providers. Failed Pi exits, no-change runs, or policy violations return stable JSON errors and do not append `CODE_PRODUCED`.
+
+See [docs/pi-provider.md](docs/pi-provider.md) for the Pi-specific runner contract.

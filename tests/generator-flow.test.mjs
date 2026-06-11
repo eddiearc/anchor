@@ -205,6 +205,149 @@ test("codex generator fake command policy violation fails without CODE_PRODUCED"
   }
 });
 
+test("pi generator runs fake command in worktree, writes report, and advances BUILD to CHECK", async () => {
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
+  const { taskId } = await planAndApproveAndWorkspace(dir, tasksDir, worktreesDir);
+
+  const fakePi = path.join(dir, "fake-pi.sh");
+  await writeFile(fakePi, [
+    "#!/bin/sh",
+    "last=''",
+    "for arg in \"$@\"; do last=\"$arg\"; done",
+    "case \"$last\" in *\"Task ID:\"*\"Approved contract path:\"*\"Approved contract:\"*\"Report expectation:\"*) ;; *) echo missing-prompt-boundary >&2; exit 3 ;; esac",
+    "if [ -n \"$ANCHOR_PI_COMMAND\" ] || [ -n \"$ANCHOR_PI_ARGV_JSON\" ] || [ -n \"$SECRET_TOKEN\" ]; then echo leaked-env >&2; exit 4; fi",
+    "mkdir -p \"$PWD/anchor-output\" 2>/dev/null || true",
+    `echo "fake pi output" > "$PWD/anchor-output/pi-${taskId}.txt"`,
+    "printf '%s\\n' \"$last\" | grep 'Approved contract path:' > \"$PWD/anchor-output/pi-prompt-boundary.txt\""
+  ].join("\n"));
+  await chmod(fakePi, 0o755);
+
+  process.env.ANCHOR_PI_COMMAND = fakePi;
+  process.env.ANCHOR_PI_ARGV_JSON = JSON.stringify(["fake-pi-exec"]);
+  process.env.SECRET_TOKEN = "do-not-leak";
+  try {
+    const gen = await runJson(["generate", taskId, "--provider", "pi"], { storePath, tasksDir, worktreesDir });
+    assert.equal(gen.ok, true);
+    assert.equal(gen.state, "CHECK");
+    assert.equal(gen.event.event_type, "CODE_PRODUCED");
+    assert.equal(gen.event.payload.provider, "pi");
+
+    const report = JSON.parse(await readFile(gen.reportPath, "utf8"));
+    assert.equal(report.adapter, "pi");
+    assert.equal(report.provider, "pi");
+    assert.equal(report.taskId, taskId);
+    assert.equal(report.exitCode, 0);
+    assert.ok(report.filesChanged.some((file) => file.startsWith("anchor-output/pi-")));
+    assert.equal(report.argv.at(-1), "[prompt redacted]");
+    assert.equal(JSON.stringify(report).includes("do-not-leak"), false);
+  } finally {
+    delete process.env.ANCHOR_PI_COMMAND;
+    delete process.env.ANCHOR_PI_ARGV_JSON;
+    delete process.env.SECRET_TOKEN;
+  }
+});
+
+test("pi generator fake command failure returns JSON error and does not advance state", async () => {
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
+  const { taskId } = await planAndApproveAndWorkspace(dir, tasksDir, worktreesDir);
+
+  const fakePi = path.join(dir, "fake-pi-fail.sh");
+  await writeFile(fakePi, ["#!/bin/sh", "exit 42"].join("\n"));
+  await chmod(fakePi, 0o755);
+
+  process.env.ANCHOR_PI_COMMAND = fakePi;
+  process.env.ANCHOR_PI_ARGV_JSON = JSON.stringify(["fake-pi-exec"]);
+  try {
+    const result = await runJsonWithExit(["generate", taskId, "--adapter", "pi"], { storePath, tasksDir, worktreesDir });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.json.ok, false);
+    assert.equal(result.json.error.code, "PI_COMMAND_FAILED");
+    assert.equal(result.json.error.report.provider, "pi");
+    assert.equal(result.json.error.report.exitCode, 42);
+    assert.equal(result.json.error.report.stderrSummary.includes("Approved contract"), false);
+    assert.equal(result.json.error.report.stderrSummary.includes("Report expectation"), false);
+
+    const snapshot = await createFileRunStore(storePath).getCurrentState(taskId);
+    assert.equal(snapshot.state, "BUILD");
+    const events = await runJson(["events", taskId], { storePath });
+    assert.equal(events.events.some((event) => event.event_type === "CODE_PRODUCED"), false);
+  } finally {
+    delete process.env.ANCHOR_PI_COMMAND;
+    delete process.env.ANCHOR_PI_ARGV_JSON;
+  }
+});
+
+test("pi generator fake command with no changes fails without CODE_PRODUCED", async () => {
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
+  const { taskId } = await planAndApproveAndWorkspace(dir, tasksDir, worktreesDir);
+
+  const fakePi = path.join(dir, "fake-pi-noop.sh");
+  await writeFile(fakePi, ["#!/bin/sh", "echo no changes"].join("\n"));
+  await chmod(fakePi, 0o755);
+
+  process.env.ANCHOR_PI_COMMAND = fakePi;
+  process.env.ANCHOR_PI_ARGV_JSON = JSON.stringify(["fake-pi-exec"]);
+  try {
+    const result = await runJsonWithExit(["generate", taskId, "--provider", "pi"], { storePath, tasksDir, worktreesDir });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.json.ok, false);
+    assert.equal(result.json.error.code, "PI_NO_CHANGES");
+    assert.equal(result.json.error.report.provider, "pi");
+
+    const snapshot = await createFileRunStore(storePath).getCurrentState(taskId);
+    assert.equal(snapshot.state, "BUILD");
+    const events = await runJson(["events", taskId], { storePath });
+    assert.equal(events.events.some((event) => event.event_type === "CODE_PRODUCED"), false);
+  } finally {
+    delete process.env.ANCHOR_PI_COMMAND;
+    delete process.env.ANCHOR_PI_ARGV_JSON;
+  }
+});
+
+test("pi generator fake command policy violation fails without CODE_PRODUCED", async () => {
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
+  const { taskId } = await planAndApproveAndWorkspace(dir, tasksDir, worktreesDir);
+
+  const fakePi = path.join(dir, "fake-pi-policy.sh");
+  await writeFile(fakePi, [
+    "#!/bin/sh",
+    "mkdir -p \"$PWD/outside-output\"",
+    `echo outside > "$PWD/outside-output/pi-${taskId}.txt"`
+  ].join("\n"));
+  await chmod(fakePi, 0o755);
+
+  process.env.ANCHOR_PI_COMMAND = fakePi;
+  process.env.ANCHOR_PI_ARGV_JSON = JSON.stringify(["fake-pi-exec"]);
+  try {
+    const result = await runJsonWithExit(["generate", taskId, "--provider", "pi"], { storePath, tasksDir, worktreesDir });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.json.ok, false);
+    assert.equal(result.json.error.code, "POLICY_VIOLATION");
+    assert.equal(result.json.error.report.provider, "pi");
+    assert.equal(result.json.error.report.policyResult.ok, false);
+
+    const snapshot = await createFileRunStore(storePath).getCurrentState(taskId);
+    assert.equal(snapshot.state, "BUILD");
+    const events = await runJson(["events", taskId], { storePath });
+    assert.equal(events.events.some((event) => event.event_type === "CODE_PRODUCED"), false);
+  } finally {
+    delete process.env.ANCHOR_PI_COMMAND;
+    delete process.env.ANCHOR_PI_ARGV_JSON;
+  }
+});
+
 test("generate requires BUILD state", async () => {
   const dir = await tempDir();
   const storePath = path.join(dir, "events.jsonl");

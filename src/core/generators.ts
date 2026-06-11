@@ -13,7 +13,9 @@ import {
   defaultRetryConfig,
   runAgent,
   buildCodexArgv,
+  buildPiArgv,
   codexCommand,
+  piCommand,
   isCommandUnavailable,
   summarizeOutput,
   redactCodexArgv
@@ -23,7 +25,7 @@ import { contractPathForTask } from "./contracts.js";
 
 const execFileAsync = promisify(execFile);
 
-export type GeneratorAdapter = "fixture" | "codex";
+export type GeneratorAdapter = "fixture" | "codex" | "pi";
 export type FixtureVariant = "allowed" | "outside";
 
 export type GeneratorReport = {
@@ -63,7 +65,10 @@ export type GeneratorError = {
     | "GIT_COMMAND_FAILED"
     | "CODEX_CLI_UNAVAILABLE"
     | "CODEX_COMMAND_FAILED"
-    | "CODEX_NO_CHANGES";
+    | "CODEX_NO_CHANGES"
+    | "PI_CLI_UNAVAILABLE"
+    | "PI_COMMAND_FAILED"
+    | "PI_NO_CHANGES";
   message: string;
   report?: GeneratorReport;
   reportPath?: string;
@@ -104,6 +109,11 @@ function generatorProviders(runner: CommandRunner): Array<ProviderDefinition<Run
       id: "codex",
       roles: ["generator"],
       run: (input) => runCodexGenerator(input, runner)
+    },
+    {
+      id: "pi",
+      roles: ["generator"],
+      run: (input) => runPiGenerator(input, runner)
     }
   ];
 }
@@ -187,6 +197,57 @@ async function runCodexGenerator(
   input: RunGeneratorInput,
   runner: CommandRunner
 ): Promise<GeneratorOk | GeneratorError> {
+  const prompt = buildGeneratorPrompt(input);
+  const allowNetwork = input.allowNetwork === true || input.config?.agent_allow_network === true;
+  return runCommandGenerator(input, runner, {
+    provider: "codex",
+    label: "Codex",
+    command: codexCommand(),
+    argv: buildCodexArgv(input.workspace.worktreePath, prompt, allowNetwork),
+    prompt,
+    timeoutMs: providerTimeoutMs("CODEX"),
+    unavailableCode: "CODEX_CLI_UNAVAILABLE",
+    commandFailedCode: "CODEX_COMMAND_FAILED",
+    noChangesCode: "CODEX_NO_CHANGES"
+  });
+}
+
+async function runPiGenerator(
+  input: RunGeneratorInput,
+  runner: CommandRunner
+): Promise<GeneratorOk | GeneratorError> {
+  const prompt = buildGeneratorPrompt(input);
+  const allowNetwork = input.allowNetwork === true || input.config?.agent_allow_network === true;
+  return runCommandGenerator(input, runner, {
+    provider: "pi",
+    label: "Pi",
+    command: piCommand(),
+    argv: buildPiArgv(input.workspace.worktreePath, prompt, allowNetwork),
+    prompt,
+    timeoutMs: providerTimeoutMs("PI"),
+    unavailableCode: "PI_CLI_UNAVAILABLE",
+    commandFailedCode: "PI_COMMAND_FAILED",
+    noChangesCode: "PI_NO_CHANGES"
+  });
+}
+
+type CommandGeneratorConfig = {
+  provider: "codex" | "pi";
+  label: "Codex" | "Pi";
+  command: string;
+  argv: string[];
+  prompt: string;
+  timeoutMs: number;
+  unavailableCode: "CODEX_CLI_UNAVAILABLE" | "PI_CLI_UNAVAILABLE";
+  commandFailedCode: "CODEX_COMMAND_FAILED" | "PI_COMMAND_FAILED";
+  noChangesCode: "CODEX_NO_CHANGES" | "PI_NO_CHANGES";
+};
+
+async function runCommandGenerator(
+  input: RunGeneratorInput,
+  runner: CommandRunner,
+  providerConfig: CommandGeneratorConfig
+): Promise<GeneratorOk | GeneratorError> {
   const status = await getWorkspaceGitStatus(input.workspace.worktreePath);
   if (!status.pathExists || !status.isGitWorktree || input.workspace.cleanedAt) {
     return {
@@ -196,11 +257,7 @@ async function runCodexGenerator(
     };
   }
 
-  const command = codexCommand();
-  const prompt = buildGeneratorPrompt(input);
-  const allowNetwork = input.allowNetwork === true || input.config?.agent_allow_network === true;
-  const argv = buildCodexArgv(input.workspace.worktreePath, prompt, allowNetwork);
-  const envAllowlist = codexEnvAllowlist();
+  const envAllowlist = providerEnvAllowlist();
   const startedAt = new Date().toISOString();
 
   const retryConfig: RetryConfig = {
@@ -210,19 +267,19 @@ async function runCodexGenerator(
 
   let result: CommandResult;
   try {
-    result = await runAgent(command, argv, input.workspace.worktreePath, runner, retryConfig, {
-      env: buildCodexEnvironment(envAllowlist),
+    result = await runAgent(providerConfig.command, providerConfig.argv, input.workspace.worktreePath, runner, retryConfig, {
+      env: buildProviderEnvironment(envAllowlist),
       envAllowlist,
-      timeoutMs: codexTimeoutMs(),
-      prompt,
+      timeoutMs: providerConfig.timeoutMs,
+      prompt: providerConfig.prompt,
       contract: input.contract
     });
   } catch (error) {
     if (isCommandUnavailable(error)) {
       return {
         ok: false,
-        code: "CODEX_CLI_UNAVAILABLE",
-        message: `Codex CLI command is unavailable: ${command}`,
+        code: providerConfig.unavailableCode,
+        message: `${providerConfig.label} CLI command is unavailable: ${providerConfig.command}`,
         detail: error instanceof Error ? error.message : String(error)
       };
     }
@@ -239,29 +296,29 @@ async function runCodexGenerator(
   });
   const finishedAt = new Date().toISOString();
   const report: GeneratorReport = {
-    adapter: "codex",
-    provider: "codex",
+    adapter: providerConfig.provider,
+    provider: providerConfig.provider,
     taskId: input.taskId,
     attempt: input.attempt,
     startedAt,
     finishedAt,
-    command,
-    argv: redactCodexArgv(argv),
+    command: providerConfig.command,
+    argv: redactCodexArgv(providerConfig.argv),
     exitCode: result.exitCode,
     stdoutSummary: summarizeOutput(result.stdout),
     stderrSummary: summarizeOutput(result.stderr),
     filesChanged: changedFiles,
     policyResult,
     commitSha: await currentHead(input.workspace.worktreePath),
-    summary: codexSummary(input.attempt, changedFiles, policyResult, result.exitCode)
+    summary: commandGeneratorSummary(providerConfig.label, input.attempt, changedFiles, policyResult, result.exitCode)
   };
   const reportPath = await writeGeneratorReport(input.artifactsDir, input.taskId, report, input.reportPath);
 
   if (result.exitCode !== 0) {
     return {
       ok: false,
-      code: "CODEX_COMMAND_FAILED",
-      message: `Codex generator exited with code ${result.exitCode}.`,
+      code: providerConfig.commandFailedCode,
+      message: `${providerConfig.label} generator exited with code ${result.exitCode}.`,
       report,
       reportPath
     };
@@ -270,8 +327,8 @@ async function runCodexGenerator(
   if (changedFiles.length === 0) {
     return {
       ok: false,
-      code: "CODEX_NO_CHANGES",
-      message: "Codex generator completed without producing worktree changes.",
+      code: providerConfig.noChangesCode,
+      message: `${providerConfig.label} generator completed without producing worktree changes.`,
       report,
       reportPath
     };
@@ -324,14 +381,14 @@ function buildGeneratorPrompt(input: RunGeneratorInput): string {
   return composePrompt(input.config, "generator_prompt", base);
 }
 
-function codexTimeoutMs() {
-  const raw = process.env.ANCHOR_CODEX_TIMEOUT_MS;
+function providerTimeoutMs(providerEnvPrefix: "CODEX" | "PI") {
+  const raw = process.env[`ANCHOR_${providerEnvPrefix}_TIMEOUT_MS`];
   if (!raw) return 10 * 60 * 1000;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 10 * 60 * 1000;
 }
 
-function codexEnvAllowlist() {
+function providerEnvAllowlist() {
   return [
     "PATH",
     "HOME",
@@ -349,7 +406,7 @@ function codexEnvAllowlist() {
   ];
 }
 
-function buildCodexEnvironment(allowlist: string[]) {
+function buildProviderEnvironment(allowlist: string[]) {
   const env: Record<string, string> = {};
   for (const key of allowlist) {
     const value = process.env[key];
@@ -433,21 +490,22 @@ async function writeFixtureOutput(worktreePath: string, taskId: string, fixture:
   await writeFile(outputPath, [`taskId=${taskId}`, `fixture=${fixture}`, "adapter=fixture", ""].join("\n"));
 }
 
-function codexSummary(
+function commandGeneratorSummary(
+  label: "Codex" | "Pi",
   attempt: number,
   changedFiles: string[],
   policyResult: PermissionResult,
   exitCode: number
 ): string {
   if (exitCode !== 0) {
-    return `Codex generator failed for attempt ${attempt}.`;
+    return `${label} generator failed for attempt ${attempt}.`;
   }
   if (changedFiles.length === 0) {
-    return `Codex generator produced no worktree changes for attempt ${attempt}.`;
+    return `${label} generator produced no worktree changes for attempt ${attempt}.`;
   }
   return policyResult.ok
-    ? `Codex generator changed ${changedFiles.length} file(s) for attempt ${attempt}.`
-    : `Codex generator produced policy-violating changes for attempt ${attempt}.`;
+    ? `${label} generator changed ${changedFiles.length} file(s) for attempt ${attempt}.`
+    : `${label} generator produced policy-violating changes for attempt ${attempt}.`;
 }
 
 async function currentHead(worktreePath: string) {
