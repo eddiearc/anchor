@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import {
   anchorVersion,
@@ -1215,7 +1217,12 @@ function json(value: unknown): CliResult {
   return { exitCode: 0, output: JSON.stringify(value, null, 2) };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function isCliEntrypoint() {
+  if (!process.argv[1]) return false;
+  return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+}
+
+if (isCliEntrypoint()) {
   runCli(process.argv.slice(2))
     .then((result) => {
       console.log(result.output);

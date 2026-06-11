@@ -24,6 +24,37 @@ Anchor takes the architecture described in Anthropic's [Harness design for long-
 
 ---
 
+## Local CLI Install / Smoke
+
+R11 supports local tarball installation for smoke testing. Anchor is not published to npm in this milestone, and the unscoped `anchor` npm package name is already occupied, so use `npm pack` from this repository.
+
+```bash
+pnpm install
+pnpm build
+pnpm test
+
+TARBALL="$(npm pack --json | node -e 'let data=\"\"; process.stdin.on(\"data\", c => data += c); process.stdin.on(\"end\", () => console.log(JSON.parse(data)[0].filename));')"
+PREFIX="$(mktemp -d)"
+npm install -g --prefix "$PREFIX" "$TARBALL"
+
+"$PREFIX/bin/anchor" --help
+"$PREFIX/bin/anchor" --version
+
+FIXTURE_REPO="$(mktemp -d)"
+git -C "$FIXTURE_REPO" init
+cd "$FIXTURE_REPO"
+
+"$PREFIX/bin/anchor" demo
+PLAN_JSON="$("$PREFIX/bin/anchor" plan "test task")"
+RUN_ID="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(0, "utf8")).runId)' <<<"$PLAN_JSON")"
+"$PREFIX/bin/anchor" status "$RUN_ID"
+"$PREFIX/bin/anchor" events "$RUN_ID"
+```
+
+The installed CLI writes run data under the current repository's `.anchor/` directory by default. This smoke does not publish to npm, does not run a real Codex end-to-end flow, and does not implement the Codex Evaluator adapter.
+
+---
+
 ## The Four Roles
 
 Every task flows through up to four roles. They run in **separate processes, separate contexts, separate models** if you want. The only thing they share is the contract.
