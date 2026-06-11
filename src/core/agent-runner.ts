@@ -3,7 +3,16 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export type CommandRunner = (command: string, args: string[], options: { cwd: string }) => Promise<CommandResult>;
+export type CommandRunOptions = {
+  cwd: string;
+  env?: Record<string, string>;
+  envAllowlist?: string[];
+  timeoutMs?: number;
+  prompt?: string;
+  contract?: string;
+};
+
+export type CommandRunner = (command: string, args: string[], options: CommandRunOptions) => Promise<CommandResult>;
 
 export type CommandResult = {
   exitCode: number;
@@ -21,11 +30,13 @@ export const defaultRetryConfig: RetryConfig = {
   backoffMs: 1000
 };
 
-export async function defaultCommandRunner(command: string, args: string[], options: { cwd: string }): Promise<CommandResult> {
+export async function defaultCommandRunner(command: string, args: string[], options: CommandRunOptions): Promise<CommandResult> {
   const { stdout, stderr } = await execFileAsync(command, args, {
     cwd: options.cwd,
+    env: options.env ? { ...options.env } : process.env,
     encoding: "utf8",
-    maxBuffer: 1024 * 1024
+    maxBuffer: 1024 * 1024,
+    timeout: options.timeoutMs
   });
   return { exitCode: 0, stdout, stderr };
 }
@@ -35,13 +46,14 @@ export async function runAgent(
   args: string[],
   cwd: string,
   runner: CommandRunner = defaultCommandRunner,
-  retryConfig: RetryConfig = defaultRetryConfig
+  retryConfig: RetryConfig = defaultRetryConfig,
+  runOptions: Omit<CommandRunOptions, "cwd"> = {}
 ): Promise<CommandResult> {
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= retryConfig.maxRetries; attempt++) {
     try {
-      return await runner(command, args, { cwd });
+      return await runner(command, args, { cwd, ...runOptions });
     } catch (error) {
       lastError = error;
 
@@ -92,17 +104,16 @@ export function buildCodexArgv(worktreePath: string, prompt: string, allowNetwor
   const base = [
     "exec",
     "--cd", worktreePath,
+    "--sandbox", "workspace-write",
+    "--ephemeral"
   ];
 
   if (allowNetwork) {
-    base.push("--sandbox", "workspace-write");
-    base.push("--allow-network");
+    base.push("-c", "sandbox_workspace_write.network_access=true");
   } else {
-    base.push("--sandbox", "workspace-write");
-    base.push("--skip-approval-if", "network");
+    base.push("-c", "sandbox_workspace_write.network_access=false");
   }
 
-  base.push("--ask-for-approval", "never");
   base.push(prompt);
   return base;
 }

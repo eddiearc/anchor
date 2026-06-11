@@ -19,7 +19,7 @@ Generator providers receive:
 - `taskId`
 - `artifactsDir`
 - `workspace` metadata
-- approved contract content
+- approved contract path/content
 - provider id from `adapter`
 - fixture/provider options
 - `attempt`
@@ -92,6 +92,22 @@ Not allowed:
 - CLI workflow branches that special-case Codex/Pi/fixture beyond resolving provider ids
 - event transition logic depending on provider id
 
-## Future Codex and Pi Providers
+## Codex Generator Provider
 
-Codex and Pi should implement this same provider interface. They should normalize outputs to `GeneratorReport` / `EvaluatorReport` and event payloads, then let Anchor core continue to operate on roles, reports, events, and states.
+The Codex generator backend is a provider implementation, not a core workflow branch. `anchor generate <taskId> --provider codex` and the backward-compatible `--adapter codex` both resolve `codex` through the generator provider registry before invoking the Codex runner path.
+
+Codex receives only Anchor-owned inputs:
+
+- approved contract path/content
+- task id
+- workspace path
+- workspace policy summary derived from the contract
+- report expectations
+
+Codex output is normalized to `GeneratorReport` and `CODE_PRODUCED` in the same shape as other generator providers. Failed Codex exits, no-change runs, or policy violations return stable JSON errors and do not append `CODE_PRODUCED`.
+
+See [docs/codex-provider.md](docs/codex-provider.md) for the Codex-specific runner contract.
+
+## Future Pi Provider
+
+Pi should implement this same provider interface. It should normalize outputs to `GeneratorReport` / `EvaluatorReport` and event payloads, then let Anchor core continue to operate on roles, reports, events, and states.

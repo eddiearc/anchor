@@ -19,6 +19,7 @@ import {
   redactCodexArgv
 } from "./agent-runner.js";
 import { composePrompt, type AnchorConfig } from "./config.js";
+import { contractPathForTask } from "./contracts.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -74,6 +75,7 @@ export type RunGeneratorInput = {
   artifactsDir: string;
   workspace: WorkspaceMetadata;
   contract: string;
+  contractPath?: string;
   adapter: string;
   fixture?: string;
   attempt: number;
@@ -196,8 +198,9 @@ async function runCodexGenerator(
 
   const command = codexCommand();
   const prompt = buildGeneratorPrompt(input);
-  const allowNetwork = input.config?.agent_allow_network === true;
+  const allowNetwork = input.allowNetwork === true || input.config?.agent_allow_network === true;
   const argv = buildCodexArgv(input.workspace.worktreePath, prompt, allowNetwork);
+  const envAllowlist = codexEnvAllowlist();
   const startedAt = new Date().toISOString();
 
   const retryConfig: RetryConfig = {
@@ -207,7 +210,13 @@ async function runCodexGenerator(
 
   let result: CommandResult;
   try {
-    result = await runAgent(command, argv, input.workspace.worktreePath, runner, retryConfig);
+    result = await runAgent(command, argv, input.workspace.worktreePath, runner, retryConfig, {
+      env: buildCodexEnvironment(envAllowlist),
+      envAllowlist,
+      timeoutMs: codexTimeoutMs(),
+      prompt,
+      contract: input.contract
+    });
   } catch (error) {
     if (isCommandUnavailable(error)) {
       return {
@@ -292,6 +301,7 @@ function buildGeneratorPrompt(input: RunGeneratorInput): string {
     "You are the Generator role inside Anchor.",
     `Task ID: ${input.taskId}`,
     `Worktree path: ${input.workspace.worktreePath}`,
+    `Approved contract path: ${input.contractPath ?? contractPathForTask(input.artifactsDir, input.taskId)}`,
     "",
     "Approved contract:",
     input.contract,
@@ -303,10 +313,49 @@ function buildGeneratorPrompt(input: RunGeneratorInput): string {
     "- Do not read, write, print, or persist secrets or authentication tokens.",
     "- Do not perform network operations or install dependencies.",
     "- Do not approve, evaluate, merge, commit, or push.",
-    "- Implement only the approved contract and leave validation to Anchor."
+    "- Implement only the approved contract and leave validation to Anchor.",
+    "",
+    "Report expectation:",
+    "- Leave worktree changes in place for Anchor to inspect.",
+    "- Do not write secrets, tokens, environment dumps, or credentials to files or output.",
+    "- Summarize changed files and any verification you ran in normal stdout/stderr only."
   ].join("\n");
 
   return composePrompt(input.config, "generator_prompt", base);
+}
+
+function codexTimeoutMs() {
+  const raw = process.env.ANCHOR_CODEX_TIMEOUT_MS;
+  if (!raw) return 10 * 60 * 1000;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10 * 60 * 1000;
+}
+
+function codexEnvAllowlist() {
+  return [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME"
+  ];
+}
+
+function buildCodexEnvironment(allowlist: string[]) {
+  const env: Record<string, string> = {};
+  for (const key of allowlist) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 async function writeCodexFailureReport(params: {
