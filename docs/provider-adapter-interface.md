@@ -139,3 +139,20 @@ Pi receives the same Anchor-owned inputs as Codex:
 Pi output is normalized to `GeneratorReport` and `CODE_PRODUCED` in the same shape as other generator providers. Failed Pi exits, no-change runs, or policy violations return stable JSON errors and do not append `CODE_PRODUCED`.
 
 See [docs/pi-provider.md](docs/pi-provider.md) for the Pi-specific runner contract.
+
+## Pi Evaluator Provider
+
+The Pi evaluator backend is also a provider implementation, not a core workflow branch. `anchor evaluate <taskId> --provider pi` and the backward-compatible `--adapter pi` both resolve `pi` through the evaluator provider registry before invoking the Pi runner path.
+
+Pi receives the same Anchor-owned evaluation inputs as Codex:
+
+- approved contract path/content
+- task id
+- workspace path
+- generator report path/content
+- changed files summary
+- required verdict file schema
+
+Pi output is normalized to `EvaluatorReport` and `EVAL_COMPLETE` in the same shape as other evaluator providers. A valid `PASS` verdict advances through the existing DONE transition; a valid `FAIL` verdict follows the existing retry path. Invalid or unparseable verdict output and command failures return stable JSON errors and do not append `EVAL_COMPLETE`.
+
+See [docs/pi-provider.md](docs/pi-provider.md) for the Pi-specific runner contract.

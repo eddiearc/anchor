@@ -14,13 +14,15 @@ import {
   defaultRetryConfig,
   runAgent,
   buildCodexArgv,
+  buildPiArgv,
   codexCommand,
+  piCommand,
   isCommandUnavailable,
   summarizeOutput,
   redactCodexArgv
 } from "./agent-runner.js";
 
-export type EvaluatorAdapter = "fixture" | "codex";
+export type EvaluatorAdapter = "fixture" | "codex" | "pi";
 
 export type EvaluatorReport = {
   adapter: EvaluatorAdapter;
@@ -60,7 +62,10 @@ export type EvaluatorError = {
     | "GENERATOR_REPORT_NOT_FOUND"
     | "CODEX_CLI_UNAVAILABLE"
     | "CODEX_COMMAND_FAILED"
-    | "CODEX_NO_VERDICT";
+    | "CODEX_NO_VERDICT"
+    | "PI_CLI_UNAVAILABLE"
+    | "PI_COMMAND_FAILED"
+    | "PI_NO_VERDICT";
   message: string;
   detail?: string;
   report?: EvaluatorReport;
@@ -102,6 +107,11 @@ function evaluatorProviders(runner: CommandRunner): Array<ProviderDefinition<Run
       id: "codex",
       roles: ["evaluator"],
       run: (input) => runCodexEvaluator(input, runner)
+    },
+    {
+      id: "pi",
+      roles: ["evaluator"],
+      run: (input) => runPiEvaluator(input, runner)
     }
   ];
 }
@@ -186,6 +196,50 @@ async function runCodexEvaluator(
   input: RunEvaluatorInput,
   runner: CommandRunner
 ): Promise<EvaluatorOk | EvaluatorError> {
+  return runCommandEvaluator(input, runner, {
+    provider: "codex",
+    label: "Codex",
+    command: codexCommand(),
+    buildArgv: buildCodexArgv,
+    timeoutEnvPrefix: "CODEX",
+    unavailableCode: "CODEX_CLI_UNAVAILABLE",
+    commandFailedCode: "CODEX_COMMAND_FAILED",
+    noVerdictCode: "CODEX_NO_VERDICT"
+  });
+}
+
+async function runPiEvaluator(
+  input: RunEvaluatorInput,
+  runner: CommandRunner
+): Promise<EvaluatorOk | EvaluatorError> {
+  return runCommandEvaluator(input, runner, {
+    provider: "pi",
+    label: "Pi",
+    command: piCommand(),
+    buildArgv: buildPiArgv,
+    timeoutEnvPrefix: "PI",
+    unavailableCode: "PI_CLI_UNAVAILABLE",
+    commandFailedCode: "PI_COMMAND_FAILED",
+    noVerdictCode: "PI_NO_VERDICT"
+  });
+}
+
+type CommandEvaluatorConfig = {
+  provider: "codex" | "pi";
+  label: "Codex" | "Pi";
+  command: string;
+  buildArgv: (worktreePath: string, prompt: string, allowNetwork?: boolean) => string[];
+  timeoutEnvPrefix: "CODEX" | "PI";
+  unavailableCode: "CODEX_CLI_UNAVAILABLE" | "PI_CLI_UNAVAILABLE";
+  commandFailedCode: "CODEX_COMMAND_FAILED" | "PI_COMMAND_FAILED";
+  noVerdictCode: "CODEX_NO_VERDICT" | "PI_NO_VERDICT";
+};
+
+async function runCommandEvaluator(
+  input: RunEvaluatorInput,
+  runner: CommandRunner,
+  providerConfig: CommandEvaluatorConfig
+): Promise<EvaluatorOk | EvaluatorError> {
   const status = await getWorkspaceGitStatus(input.workspace.worktreePath);
   if (!status.pathExists || !status.isGitWorktree || input.workspace.cleanedAt) {
     return {
@@ -213,15 +267,15 @@ async function runCodexEvaluator(
   if (changedFiles.length === 0) {
     return {
       ok: false,
-      code: "CODEX_NO_VERDICT",
+      code: providerConfig.noVerdictCode,
       message: "No changed files to evaluate in the workspace."
     };
   }
 
-  const command = codexCommand();
+  const command = providerConfig.command;
   const prompt = buildEvaluatorPrompt(input, changedFiles, generatorReportPathStr, generatorReportContent);
   const allowNetwork = input.allowNetwork === true || input.config?.agent_allow_network === true;
-  const argv = buildCodexArgv(input.workspace.worktreePath, prompt, allowNetwork);
+  const argv = providerConfig.buildArgv(input.workspace.worktreePath, prompt, allowNetwork);
   const envAllowlist = providerEnvAllowlist();
   const retryConfig: RetryConfig = {
     maxRetries: input.config?.agent_retry_max ?? defaultRetryConfig.maxRetries,
@@ -234,7 +288,7 @@ async function runCodexEvaluator(
     result = await runAgent(command, argv, input.workspace.worktreePath, runner, retryConfig, {
       env: buildProviderEnvironment(envAllowlist),
       envAllowlist,
-      timeoutMs: providerTimeoutMs("CODEX"),
+      timeoutMs: providerTimeoutMs(providerConfig.timeoutEnvPrefix),
       prompt,
       contract: input.contract
     });
@@ -242,23 +296,23 @@ async function runCodexEvaluator(
     if (isCommandUnavailable(error)) {
       return {
         ok: false,
-        code: "CODEX_CLI_UNAVAILABLE",
-        message: `Codex CLI command is unavailable: ${command}`,
+        code: providerConfig.unavailableCode,
+        message: `${providerConfig.label} CLI command is unavailable: ${command}`,
         detail: error instanceof Error ? error.message : String(error)
       };
     }
     throw error;
   }
 
-  // Read Codex's structured verdict output
+  // Read the provider's structured verdict output
   const verdictPath = path.join(input.workspace.worktreePath, ".anchor", "eval", "verdict.json");
-  const verdictResult = await readCodexVerdict(verdictPath, result);
+  const verdictResult = await readProviderVerdict(verdictPath, result, providerConfig);
 
   const finishedAt = new Date().toISOString();
   const filesInspected = (await getWorkspaceGitStatus(input.workspace.worktreePath)).changedFiles;
   const report: EvaluatorReport = {
-    adapter: "codex",
-    provider: "codex",
+    adapter: providerConfig.provider,
+    provider: providerConfig.provider,
     verdict: verdictResult.ok ? verdictResult.verdict : "FAIL",
     taskId: input.taskId,
     attempt: input.attempt,
@@ -275,8 +329,8 @@ async function runCodexEvaluator(
     stdoutSummary: summarizeOutput(result.stdout),
     stderrSummary: summarizeOutput(result.stderr),
     summary: verdictResult.ok
-      ? `Codex evaluator returned ${verdictResult.verdict} (exit ${result.exitCode}, ${verdictResult.testsRun} tests, ${verdictResult.testsFailed} failed).`
-      : `Codex evaluator failed before a valid verdict (exit ${result.exitCode}): ${verdictResult.message}`
+      ? `${providerConfig.label} evaluator returned ${verdictResult.verdict} (exit ${result.exitCode}, ${verdictResult.testsRun} tests, ${verdictResult.testsFailed} failed).`
+      : `${providerConfig.label} evaluator failed before a valid verdict (exit ${result.exitCode}): ${verdictResult.message}`
   };
   const reportPath = await writeEvaluatorReport(input.artifactsDir, input.taskId, report, input.reportPath);
 
@@ -339,7 +393,7 @@ function buildEvaluatorPrompt(
   return composePrompt(input.config, "evaluator_prompt", base);
 }
 
-type CodexVerdictResult =
+type ProviderVerdictResult =
   | {
       ok: true;
       verdict: EvalVerdict;
@@ -349,12 +403,16 @@ type CodexVerdictResult =
     }
   | {
       ok: false;
-      code: "CODEX_NO_VERDICT" | "CODEX_COMMAND_FAILED";
+      code: "CODEX_NO_VERDICT" | "CODEX_COMMAND_FAILED" | "PI_NO_VERDICT" | "PI_COMMAND_FAILED";
       message: string;
       detail?: string;
     };
 
-async function readCodexVerdict(verdictPath: string, result: CommandResult): Promise<CodexVerdictResult> {
+async function readProviderVerdict(
+  verdictPath: string,
+  result: CommandResult,
+  providerConfig: CommandEvaluatorConfig
+): Promise<ProviderVerdictResult> {
   const raw = await readOptional(verdictPath);
   if (raw !== null) {
     try {
@@ -374,15 +432,15 @@ async function readCodexVerdict(verdictPath: string, result: CommandResult): Pro
       }
       return {
         ok: false,
-        code: "CODEX_NO_VERDICT",
-        message: `Codex evaluator wrote an invalid verdict file: ${verdictPath}`,
+        code: providerConfig.noVerdictCode,
+        message: `${providerConfig.label} evaluator wrote an invalid verdict file: ${verdictPath}`,
         detail: "Expected JSON object with verdict PASS|FAIL and string feedback."
       };
     } catch (error) {
       return {
         ok: false,
-        code: "CODEX_NO_VERDICT",
-        message: `Codex evaluator wrote unparseable verdict JSON: ${verdictPath}`,
+        code: providerConfig.noVerdictCode,
+        message: `${providerConfig.label} evaluator wrote unparseable verdict JSON: ${verdictPath}`,
         detail: error instanceof Error ? error.message : String(error)
       };
     }
@@ -391,21 +449,21 @@ async function readCodexVerdict(verdictPath: string, result: CommandResult): Pro
   if (result.exitCode !== 0) {
     return {
       ok: false,
-      code: "CODEX_COMMAND_FAILED",
-      message: `Codex evaluator exited with code ${result.exitCode} without a valid verdict file.`,
+      code: providerConfig.commandFailedCode,
+      message: `${providerConfig.label} evaluator exited with code ${result.exitCode} without a valid verdict file.`,
       detail: summarizeOutput(result.stderr || result.stdout)
     };
   }
 
   return {
     ok: false,
-    code: "CODEX_NO_VERDICT",
-    message: `Codex evaluator completed without writing a valid verdict file: ${verdictPath}`,
+    code: providerConfig.noVerdictCode,
+    message: `${providerConfig.label} evaluator completed without writing a valid verdict file: ${verdictPath}`,
     detail: summarizeOutput(result.stdout || result.stderr)
   };
 }
 
-function providerTimeoutMs(providerEnvPrefix: "CODEX") {
+function providerTimeoutMs(providerEnvPrefix: "CODEX" | "PI") {
   const raw = process.env[`ANCHOR_${providerEnvPrefix}_TIMEOUT_MS`];
   if (!raw) return 10 * 60 * 1000;
   const parsed = Number(raw);

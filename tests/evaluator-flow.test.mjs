@@ -268,3 +268,157 @@ test("codex evaluator command failure returns JSON error without state migration
     delete process.env.ANCHOR_CODEX_ARGV_JSON;
   }
 });
+
+test("pi evaluator runs fake script, reads verdict.json, and advances CHECK to DONE", async () => {
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
+
+  const { taskId, storePath } = await planApproveGenerate(dir, tasksDir, worktreesDir);
+
+  const fakePi = path.join(dir, "fake-pi.sh");
+  await writeFile(fakePi, [
+    "#!/bin/sh",
+    "last=''",
+    "for arg in \"$@\"; do last=\"$arg\"; done",
+    "case \"$last\" in *\"Approved contract path:\"*\"Generator report path:\"*\"Generator report:\"*\"The Generator changed these files:\"*) ;; *) echo missing-prompt-boundary >&2; exit 3 ;; esac",
+    "if [ -n \"$ANCHOR_PI_COMMAND\" ] || [ -n \"$ANCHOR_PI_ARGV_JSON\" ] || [ -n \"$SECRET_TOKEN\" ]; then echo leaked-env >&2; exit 4; fi",
+    "mkdir -p \"$PWD/.anchor/eval\" 2>/dev/null || true",
+    `echo '{"verdict":"PASS","feedback":"Pi accepted the work.","testsRun":4,"testsFailed":0}' > "$PWD/.anchor/eval/verdict.json"`
+  ].join("\n"));
+  await chmod(fakePi, 0o755);
+
+  process.env.ANCHOR_PI_COMMAND = fakePi;
+  process.env.ANCHOR_PI_ARGV_JSON = JSON.stringify(["fake-exec", "--cd", "__worktree__"]);
+  process.env.SECRET_TOKEN = "do-not-leak";
+  try {
+    const evalResult = await runJson(["evaluate", taskId, "--provider", "pi"], { storePath, tasksDir, worktreesDir });
+
+    assert.equal(evalResult.ok, true);
+    assert.equal(evalResult.state, "DONE");
+    assert.equal(evalResult.verdict, "PASS");
+    assert.equal(evalResult.testsRun, 4);
+    assert.equal(evalResult.testsFailed, 0);
+    assert.equal(evalResult.event.event_type, "EVAL_COMPLETE");
+    assert.equal(evalResult.event.emitted_by, "evaluator");
+    assert.equal(evalResult.event.payload.provider, "pi");
+
+    const report = JSON.parse(await readFile(evalResult.reportPath, "utf8"));
+    assert.equal(report.adapter, "pi");
+    assert.equal(report.provider, "pi");
+    assert.equal(report.taskId, taskId);
+    assert.equal(report.generatorReportPath.endsWith("generator-report.json"), true);
+    assert.equal(report.argv.at(-1), "[prompt redacted]");
+    assert.equal(report.exitCode, 0);
+
+    const events = await runJson(["events", taskId], { storePath });
+    assert.equal(events.events[events.events.length - 1].state_after, "DONE");
+  } finally {
+    delete process.env.ANCHOR_PI_COMMAND;
+    delete process.env.ANCHOR_PI_ARGV_JSON;
+    delete process.env.SECRET_TOKEN;
+  }
+});
+
+test("pi evaluator valid FAIL verdict returns CHECK to BUILD", async () => {
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
+
+  const { taskId, storePath } = await planApproveGenerate(dir, tasksDir, worktreesDir);
+
+  const fakePi = path.join(dir, "fake-pi-fail.sh");
+  await writeFile(fakePi, [
+    "#!/bin/sh",
+    "mkdir -p \"$PWD/.anchor/eval\" 2>/dev/null || true",
+    `echo '{"verdict":"FAIL","feedback":"Pi found a contract mismatch.","testsRun":3,"testsFailed":1}' > "$PWD/.anchor/eval/verdict.json"`
+  ].join("\n"));
+  await chmod(fakePi, 0o755);
+
+  process.env.ANCHOR_PI_COMMAND = fakePi;
+  process.env.ANCHOR_PI_ARGV_JSON = JSON.stringify(["fake-exec", "--cd", "__worktree__"]);
+  try {
+    const evalResult = await runJson(["evaluate", taskId, "--adapter", "pi"], { storePath, tasksDir, worktreesDir });
+
+    assert.equal(evalResult.ok, true);
+    assert.equal(evalResult.verdict, "FAIL");
+    assert.equal(evalResult.state, "BUILD");
+    assert.equal(evalResult.testsRun, 3);
+    assert.equal(evalResult.testsFailed, 1);
+    assert.equal(evalResult.event.payload.provider, "pi");
+
+    const report = JSON.parse(await readFile(evalResult.reportPath, "utf8"));
+    assert.equal(report.provider, "pi");
+    assert.equal(report.verdict, "FAIL");
+  } finally {
+    delete process.env.ANCHOR_PI_COMMAND;
+    delete process.env.ANCHOR_PI_ARGV_JSON;
+  }
+});
+
+test("pi evaluator invalid verdict returns JSON error without state migration or EVAL_COMPLETE", async () => {
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
+
+  const { taskId, storePath } = await planApproveGenerate(dir, tasksDir, worktreesDir);
+
+  const fakePi = path.join(dir, "fake-pi-invalid.sh");
+  await writeFile(fakePi, [
+    "#!/bin/sh",
+    "mkdir -p \"$PWD/.anchor/eval\" 2>/dev/null || true",
+    "echo '{not json' > \"$PWD/.anchor/eval/verdict.json\"",
+    "exit 42"
+  ].join("\n"));
+  await chmod(fakePi, 0o755);
+
+  process.env.ANCHOR_PI_COMMAND = fakePi;
+  process.env.ANCHOR_PI_ARGV_JSON = JSON.stringify(["fake-exec"]);
+  try {
+    const result = await runJsonWithExit(["evaluate", taskId, "--provider", "pi"], { storePath, tasksDir, worktreesDir });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.json.ok, false);
+    assert.equal(result.json.error.code, "PI_NO_VERDICT");
+    assert.equal(result.json.error.report.provider, "pi");
+
+    const snapshot = await createFileRunStore(storePath).getCurrentState(taskId);
+    assert.equal(snapshot.state, "CHECK");
+    const events = await runJson(["events", taskId], { storePath });
+    assert.equal(events.events.some((event) => event.event_type === "EVAL_COMPLETE"), false);
+  } finally {
+    delete process.env.ANCHOR_PI_COMMAND;
+    delete process.env.ANCHOR_PI_ARGV_JSON;
+  }
+});
+
+test("pi evaluator command failure returns JSON error without state migration or prompt leakage", async () => {
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
+
+  const { taskId, storePath } = await planApproveGenerate(dir, tasksDir, worktreesDir);
+
+  const fakePi = path.join(dir, "fake-pi-command-failure.sh");
+  await writeFile(fakePi, ["#!/bin/sh", "exit 42"].join("\n"));
+  await chmod(fakePi, 0o755);
+
+  process.env.ANCHOR_PI_COMMAND = fakePi;
+  process.env.ANCHOR_PI_ARGV_JSON = JSON.stringify(["fake-exec"]);
+  try {
+    const result = await runJsonWithExit(["evaluate", taskId, "--provider", "pi"], { storePath, tasksDir, worktreesDir });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.json.ok, false);
+    assert.equal(result.json.error.code, "PI_COMMAND_FAILED");
+    assert.equal(result.json.error.report.provider, "pi");
+    assert.equal(result.json.error.report.exitCode, 42);
+    assert.doesNotMatch(result.json.error.report.stderrSummary, /Task ID|Approved contract|Generator report/);
+
+    const snapshot = await createFileRunStore(storePath).getCurrentState(taskId);
+    assert.equal(snapshot.state, "CHECK");
+    const events = await runJson(["events", taskId], { storePath });
+    assert.equal(events.events.some((event) => event.event_type === "EVAL_COMPLETE"), false);
+  } finally {
+    delete process.env.ANCHOR_PI_COMMAND;
+    delete process.env.ANCHOR_PI_ARGV_JSON;
+  }
+});
