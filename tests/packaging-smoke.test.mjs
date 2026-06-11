@@ -41,7 +41,8 @@ test("npm tarball installs an anchor binary that works outside the source repo",
   assert.equal(pack.length, 1);
   assert.equal(pack[0].name, packageJson.name);
   assert.equal(pack[0].version, packageJson.version);
-  assert.match(pack[0].filename, /^anchor-0\.0\.0\.tgz$/);
+  const expectedTarballName = `${packageJson.name.replace(/^@/, "").replace("/", "-")}-${packageJson.version}.tgz`;
+  assert.equal(pack[0].filename, expectedTarballName);
 
   const tarballFiles = pack[0].files.map((file) => file.path);
   assert(tarballFiles.includes("dist/cli/index.js"));

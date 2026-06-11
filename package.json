@@ -1,9 +1,8 @@
 {
-  "name": "anchor",
+  "name": "@eddiearc/anchor",
   "version": "0.0.0",
   "description": "A contract-driven, multi-role isolated coding harness.",
   "type": "module",
-  "private": true,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
@@ -17,11 +16,30 @@
     }
   },
   "bin": {
-    "anchor": "./dist/cli/index.js"
+    "anchor": "dist/cli/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eddiearc/anchor.git"
+  },
+  "license": "MIT",
+  "keywords": [
+    "agent",
+    "cli",
+    "codex",
+    "harness",
+    "llm",
+    "state-machine"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "anchor": "pnpm build && node dist/cli/index.js",
     "build": "tsc -p tsconfig.build.json",
+    "pack:check": "pnpm build && pnpm test && npm pack --dry-run",
+    "publish:dry-run": "npm publish --dry-run --access public",
+    "prepublishOnly": "pnpm pack:check",
     "test": "pnpm build && node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },

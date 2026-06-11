@@ -24,9 +24,46 @@ Anchor takes the architecture described in Anthropic's [Harness design for long-
 
 ---
 
+## Installation Status
+
+Anchor is not published to npm yet. The unscoped `anchor` npm package name is already occupied, so this package is prepared for the scoped publish target `@eddiearc/anchor`.
+
+Current local tarball install:
+
+```bash
+pnpm install
+pnpm build
+TARBALL="$(npm pack --json | node -e 'let data=""; process.stdin.on("data", c => data += c); process.stdin.on("end", () => console.log(JSON.parse(data)[0].filename));')"
+npm install -g "$TARBALL"
+```
+
+Local source checkout:
+
+```bash
+pnpm install
+pnpm build
+pnpm anchor --help
+```
+
+Future npm install after a human explicitly approves and performs the public publish:
+
+```bash
+npm install -g @eddiearc/anchor
+```
+
+Before publishing, run the release checklist in [docs/release-checklist.md](https://github.com/eddiearc/anchor/blob/main/docs/release-checklist.md). The publish readiness dry run is:
+
+```bash
+pnpm publish:dry-run
+```
+
+Do not run a real `npm publish` until the package scope, version, changelog, tag, and post-install smoke are manually confirmed.
+
+---
+
 ## 5-minute Local CLI Quickstart
 
-Anchor is not published to npm in this milestone, and the unscoped `anchor` npm package name is already occupied, so use `npm pack` from this repository for a local install smoke.
+Use `npm pack` from this repository for a local install smoke.
 
 ```bash
 pnpm install
@@ -53,7 +90,7 @@ TASK_ID="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSy
 "$PREFIX/bin/anchor" events "$TASK_ID"
 ```
 
-The installed CLI writes task and event data under the current repository's `.anchor/` directory by default. `anchor run` creates a task and contract, then stops for human approval; it does not generate code. Use `anchor next "$TASK_ID"` whenever you want the CLI to suggest the next command. This smoke does not publish to npm, does not run a real Codex end-to-end flow, and does not implement the Codex Evaluator adapter.
+The installed CLI writes task and event data under the current repository's `.anchor/` directory by default. `anchor run` creates a task and contract, then stops for human approval; it does not generate code. Use `anchor next "$TASK_ID"` whenever you want the CLI to suggest the next command. This smoke does not publish to npm and does not run real Codex/Pi end-to-end flows.
 
 For agent integrations, use the JSON/exit-code protocol in [docs/agent-cli-protocol.md](docs/agent-cli-protocol.md). Provider backends are defined in [docs/provider-adapter-interface.md](docs/provider-adapter-interface.md), with runner details in [docs/codex-provider.md](docs/codex-provider.md) and [docs/pi-provider.md](docs/pi-provider.md). Anchor's canonical task identifier is `taskId`.
 
@@ -690,7 +727,7 @@ Topics to discuss before implementation:
 
 ## Development
 
-Anchor is currently at R10: a TypeScript-first deterministic CLI MVP backed by contract artifacts, human approval SHA events, git worktree workspace management, deterministic fixture generation/evaluation/retry orchestration, a Codex CLI Generator adapter, the state machine core, event-sourced JSONL run store, and permission guard helpers.
+Anchor is a TypeScript-first deterministic CLI MVP backed by contract artifacts, human approval SHA events, git worktree workspace management, deterministic fixture generation/evaluation/retry orchestration, provider-based Codex/Pi adapter smokes, the state machine core, event-sourced JSONL run store, and permission guard helpers.
 
 ```bash
 pnpm install
