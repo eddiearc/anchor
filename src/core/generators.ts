@@ -98,6 +98,15 @@ export async function runGenerator(
   return provider.run(input);
 }
 
+export function validateGeneratorProvider(
+  providerId: string,
+  runner: CommandRunner = defaultCommandRunner
+): { ok: true } | GeneratorError {
+  const provider = resolveProvider(generatorProviders(runner), providerId, "generator");
+  if ("ok" in provider) return generatorProviderError(provider);
+  return { ok: true };
+}
+
 function generatorProviders(runner: CommandRunner): Array<ProviderDefinition<RunGeneratorInput, GeneratorOk | GeneratorError>> {
   return [
     {

@@ -93,6 +93,17 @@ Not allowed:
 - CLI workflow branches that special-case Codex/Pi/fixture beyond resolving provider ids
 - event transition logic depending on provider id
 
+## Retry Orchestration
+
+`anchor run-retry` is a provider consumer. It selects generator and evaluator provider ids, validates them before attempts are created, then calls the same provider interfaces used by `anchor generate` and `anchor evaluate`.
+
+- `--generator-provider` selects the generator role backend.
+- `--evaluator-provider` selects the evaluator role backend.
+- `--provider` / `--adapter` remain shorthand for selecting the same backend for both roles.
+- Defaults are `fixture` for both roles.
+
+Retry orchestration consumes normalized `GeneratorReport` and `EvaluatorReport` outputs and appends normal `CODE_PRODUCED` / `EVAL_COMPLETE` events with provider metadata. It does not parse provider-private output or branch on Codex/Pi/fixture workflow behavior.
+
 ## Codex Generator Provider
 
 The Codex generator backend is a provider implementation, not a core workflow branch. `anchor generate <taskId> --provider codex` and the backward-compatible `--adapter codex` both resolve `codex` through the generator provider registry before invoking the Codex runner path.

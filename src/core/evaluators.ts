@@ -85,6 +85,7 @@ export type RunEvaluatorInput = {
   reportPath?: string;
   config?: AnchorConfig;
   allowNetwork?: boolean;
+  retryFailTimes?: number;
 };
 
 export async function runEvaluator(
@@ -94,6 +95,15 @@ export async function runEvaluator(
   const provider = resolveProvider(evaluatorProviders(runner), input.adapter, "evaluator");
   if ("ok" in provider) return evaluatorProviderError(provider);
   return provider.run(input);
+}
+
+export function validateEvaluatorProvider(
+  providerId: string,
+  runner: CommandRunner = defaultCommandRunner
+): { ok: true } | EvaluatorError {
+  const provider = resolveProvider(evaluatorProviders(runner), providerId, "evaluator");
+  if ("ok" in provider) return evaluatorProviderError(provider);
+  return { ok: true };
 }
 
 function evaluatorProviders(runner: CommandRunner): Array<ProviderDefinition<RunEvaluatorInput, EvaluatorOk | EvaluatorError>> {
@@ -136,7 +146,7 @@ export async function runFixtureEvaluator(
     };
   }
 
-  const requestedVerdict = readFixtureVerdict(input.verdict);
+  const requestedVerdict = readFixtureVerdict(input.verdict ?? fixtureRetryVerdict(input));
   if (!requestedVerdict.ok) {
     return requestedVerdict;
   }
@@ -544,4 +554,9 @@ function readFixtureVerdict(
     message: "Fixture evaluator verdict must be pass or fail.",
     detail: verdict ?? ""
   };
+}
+
+function fixtureRetryVerdict(input: RunEvaluatorInput): string | undefined {
+  if (typeof input.retryFailTimes !== "number" || typeof input.attempt !== "number") return undefined;
+  return input.attempt <= input.retryFailTimes ? "fail" : "pass";
 }

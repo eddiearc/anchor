@@ -727,7 +727,7 @@ ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor demo
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl pnpm anchor demo --fixture retry
 ```
 
-CLI command output is stable JSON for `plan`, `contract`, `approve`, `workspace create`, `generate`, `evaluate`, `run-retry`, `workspace status`, `workspace cleanup`, `demo`, `status`, and `events`. `plan` creates a standard-mode contract and leaves the run in `HUMAN`. `approve` reads the contract artifact, computes its SHA-256, and appends `CONTRACT_APPROVED` by `human` with `contract_id` and `contract_sha`, moving the run to `BUILD`. `workspace create` requires that approved `BUILD` state, creates an isolated git worktree and branch, writes workspace metadata, and appends `WORKSPACE_CREATED` by `system`. `generate` requires `BUILD`, an active workspace, and an approved contract; the fixture adapter writes inside the worktree, validates changed files against the contract allowlist/denylist, writes a generator report, and appends `CODE_PRODUCED(generator)` only on policy success. `evaluate` requires `CHECK`, an active workspace, a contract, and a generator report; the fixture adapter inspects worktree changes, writes an evaluator report, and appends `EVAL_COMPLETE(evaluator)`. `run-retry` requires `BUILD` or `CHECK`, an active workspace, and a contract; it repeatedly runs fixture generation/evaluation until PASS reaches `DONE` or retry budget is exhausted to `HUMAN`. `workspace cleanup` removes only the metadata-recorded worktree path, writes a cleanup tombstone, and appends `WORKSPACE_CLEANED` by `system`. `status` and `contract` report a dirty warning when the current artifact SHA differs from the approved SHA.
+CLI command output is stable JSON for `plan`, `contract`, `approve`, `workspace create`, `generate`, `evaluate`, `run-retry`, `workspace status`, `workspace cleanup`, `demo`, `status`, and `events`. `plan` creates a standard-mode contract and leaves the run in `HUMAN`. `approve` reads the contract artifact, computes its SHA-256, and appends `CONTRACT_APPROVED` by `human` with `contract_id` and `contract_sha`, moving the run to `BUILD`. `workspace create` requires that approved `BUILD` state, creates an isolated git worktree and branch, writes workspace metadata, and appends `WORKSPACE_CREATED` by `system`. `generate` requires `BUILD`, an active workspace, and an approved contract; the selected generator provider writes inside the worktree, validates changed files against the contract allowlist/denylist, writes a generator report, and appends `CODE_PRODUCED(generator)` only on policy success. `evaluate` requires `CHECK`, an active workspace, a contract, and a generator report; the selected evaluator provider writes an evaluator report and appends `EVAL_COMPLETE(evaluator)`. `run-retry` requires `BUILD` or `CHECK`, an active workspace, and a contract; it repeatedly runs selected generator/evaluator providers until PASS reaches `DONE` or retry budget is exhausted to `HUMAN`. `workspace cleanup` removes only the metadata-recorded worktree path, writes a cleanup tombstone, and appends `WORKSPACE_CLEANED` by `system`. `status` and `contract` report a dirty warning when the current artifact SHA differs from the approved SHA.
 
 `events` includes `seq`, `event_type`, `payload`, `emitted_by`, `state_before`, and `state_after`.
 
@@ -839,22 +839,24 @@ Then it appends `EVAL_COMPLETE(evaluator)` with verdict, report path, tests run,
 
 ### Retry Orchestration
 
-R9 adds deterministic fixture retry orchestration:
+R19 retry orchestration runs through the same generator/evaluator provider interfaces used by single-step commands:
 
 ```bash
 anchor run-retry <runId> --fail-times <n>
+anchor run-retry <runId> --generator-provider fixture --evaluator-provider fixture --fail-times <n>
+anchor run-retry <runId> --generator-provider codex --evaluator-provider pi --allow-network
 ```
 
-The run must already be approved and have an active workspace. `run-retry` accepts current state `BUILD` or `CHECK`; other states return `run_retry_requires_build_or_check_state`. `--fail-times` must be a non-negative integer and defaults to `0`.
+The run must already be approved and have an active workspace. `run-retry` accepts current state `BUILD` or `CHECK`; other states return `retry_requires_build_or_check_state`. `--fail-times` must be a non-negative integer and defaults to `0`; it is consumed by the fixture evaluator provider for deterministic local retry tests. `--provider` / `--adapter` select the same provider for both roles, while `--generator-provider` and `--evaluator-provider` select roles independently. The default remains `fixture` for both roles.
 
-Each `BUILD` step runs the fixture generator and writes `.anchor/runs/<runId>/attempts/<n>/generator-report.json`. Each `CHECK` step runs the fixture evaluator and writes `.anchor/runs/<runId>/attempts/<n>/evaluator-report.json`. Attempt report paths are unique and do not overwrite the single-step `generator-report.json` / `evaluator-report.json` files used by `generate` and `evaluate`.
+Each `BUILD` step runs the selected generator provider and writes `.anchor/runs/<runId>/attempts/<n>/generator-report.json`. Each `CHECK` step runs the selected evaluator provider and writes `.anchor/runs/<runId>/attempts/<n>/evaluator-report.json`. Attempt report paths are unique and do not overwrite the single-step `generator-report.json` / `evaluator-report.json` files used by `generate` and `evaluate`.
 
 Event payloads include attempt numbers:
 
-- `CODE_PRODUCED(generator)` includes `attempt`, `report_path`, and `files_changed`
-- `EVAL_COMPLETE(evaluator)` includes `attempt`, `verdict`, `report_path`, tests run, tests failed, and feedback
+- `CODE_PRODUCED(generator)` includes `attempt`, `report_path`, `files_changed`, and `provider`
+- `EVAL_COMPLETE(evaluator)` includes `attempt`, `verdict`, `report_path`, tests run, tests failed, feedback, and `provider`
 
-`--fail-times 0` evaluates PASS on the first attempt and reaches `DONE`. `--fail-times 1` fails once, returns to `BUILD`, generates a second attempt, then passes and reaches `DONE`. A fail count above the retry budget eventually reaches `HUMAN` with `retriesLeft` at `0`. R9/R10 retry still uses fixture generation/evaluation only; it does not call Codex, merge/commit output, or clean the worktree.
+`--fail-times 0` with fixture providers evaluates PASS on the first attempt and reaches `DONE`. `--fail-times 1` fails once, returns to `BUILD`, generates a second attempt, then passes and reaches `DONE`. A fail count above the retry budget eventually reaches `HUMAN` with `retriesLeft` at `0`. Non-fixture providers are optional in retry orchestration and are expected to be validated with deterministic fake runners unless local non-interactive CLIs are available.
 
 ### State Machine Core
 

@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -22,6 +22,8 @@ import {
   readWorkspaceStatus,
   runGenerator,
   runEvaluator,
+  validateGeneratorProvider,
+  validateEvaluatorProvider,
   runPlanner,
   runReviewer,
   generatorAttemptReportPath,
@@ -774,7 +776,10 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
     return { ok: false, error: "task_id_required", storePath, tasksDir, worktreesDir };
   }
 
-  const adapter = readOption(args, "--adapter") ?? "fixture";
+  const sharedProvider = readOption(args, "--provider") ?? readOption(args, "--adapter");
+  const generatorProvider = readOption(args, "--generator-provider") ?? readOption(args, "--generator-adapter") ?? sharedProvider ?? "fixture";
+  const evaluatorProvider = readOption(args, "--evaluator-provider") ?? readOption(args, "--evaluator-adapter") ?? sharedProvider ?? "fixture";
+  const allowNetwork = isOptionPresent(args, "--allow-network");
   const failTimesResult = readFailTimes(args);
   if (!failTimesResult.ok) {
     return { ok: false, command: "run-retry", error: failTimesResult, taskId, storePath, tasksDir, worktreesDir };
@@ -799,6 +804,15 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
     return { ok: false, error: "contract_not_found", taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };
   }
 
+  const generatorProviderCheck = validateGeneratorProvider(generatorProvider);
+  if (!generatorProviderCheck.ok) {
+    return { ok: false, command: "run-retry", error: generatorProviderCheck, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir, generatorProvider, evaluatorProvider };
+  }
+  const evaluatorProviderCheck = validateEvaluatorProvider(evaluatorProvider);
+  if (!evaluatorProviderCheck.ok) {
+    return { ok: false, command: "run-retry", error: evaluatorProviderCheck, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir, generatorProvider, evaluatorProvider };
+  }
+
   const steps: Array<Record<string, unknown>> = [];
   let state: State = snapshot.state;
   while (state === "BUILD" || state === "CHECK") {
@@ -810,9 +824,12 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
         artifactsDir: tasksDir,
         workspace: workspace.metadata,
         contract: contract.content,
-        adapter,
+        contractPath: contract.path,
+        adapter: generatorProvider,
         attempt,
-        reportPath: generatorAttemptReportPath(tasksDir, taskId, attempt)
+        reportPath: generatorAttemptReportPath(tasksDir, taskId, attempt),
+        config: _config,
+        allowNetwork: allowNetwork || _config?.agent_allow_network === true
       });
       if (!result.ok) {
         return { ok: false, command: "run-retry", error: result, taskId, state, storePath, tasksDir, worktreesDir, steps };
@@ -820,14 +837,14 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
 
       const eventResult = await store.appendEvent(
         taskId,
-        { type: "CODE_PRODUCED", report_path: result.reportPath, files_changed: result.filesChanged, attempt },
+        { type: "CODE_PRODUCED", report_path: result.reportPath, files_changed: result.filesChanged, attempt, provider: result.report.provider },
         "generator"
       );
       if (!eventResult.ok) {
         return { ok: false, command: "run-retry", error: eventResult, taskId, state, storePath, tasksDir, worktreesDir, reportPath: result.reportPath, steps };
       }
 
-      steps.push({ role: "generator", attempt, reportPath: result.reportPath, filesChanged: result.filesChanged, event: summarizeEvent(eventResult.event) });
+      steps.push({ role: "generator", provider: result.report.provider, attempt, reportPath: result.reportPath, filesChanged: result.filesChanged, event: summarizeEvent(eventResult.event) });
       state = eventResult.event.state_after;
       continue;
     }
@@ -835,21 +852,19 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
     const events = await store.listEvents(taskId);
     const attempt = events.filter((event) => event.event_type === "EVAL_COMPLETE").length + 1;
     const latestCode = latestCodeProduced(events);
-    // For fixture adapter, force verdict based on remaining retries.
-    // For Codex, the evaluator determines its own verdict from the code.
-    const forcedVerdict = adapter === "fixture"
-      ? (attempt <= failTimesResult.failTimes ? "fail" : "pass")
-      : undefined;
     const result = await runEvaluator({
       taskId,
       artifactsDir: tasksDir,
       workspace: workspace.metadata,
       contract: contract.content,
-      adapter,
-      verdict: forcedVerdict,
+      contractPath: contract.path,
+      adapter: evaluatorProvider,
       attempt,
       generatorReportPath: latestCode?.payload.report_path,
-      reportPath: evaluatorAttemptReportPath(tasksDir, taskId, attempt)
+      reportPath: evaluatorAttemptReportPath(tasksDir, taskId, attempt),
+      config: _config,
+      allowNetwork: allowNetwork || _config?.agent_allow_network === true,
+      retryFailTimes: failTimesResult.failTimes
     });
     if (!result.ok) {
       return { ok: false, command: "run-retry", error: result, taskId, state, storePath, tasksDir, worktreesDir, steps };
@@ -864,7 +879,8 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
         report_path: result.reportPath,
         tests_run: result.report.testsRun,
         tests_failed: result.report.testsFailed,
-        feedback: result.report.feedback
+        feedback: result.report.feedback,
+        provider: result.report.provider
       },
       "evaluator"
     );
@@ -872,7 +888,10 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
       return { ok: false, command: "run-retry", error: eventResult, taskId, state, storePath, tasksDir, worktreesDir, reportPath: result.reportPath, steps };
     }
 
-    steps.push({ role: "evaluator", attempt, reportPath: result.reportPath, verdict: result.report.verdict, testsRun: result.report.testsRun, testsFailed: result.report.testsFailed, event: summarizeEvent(eventResult.event) });
+    steps.push({ role: "evaluator", provider: result.report.provider, attempt, reportPath: result.reportPath, verdict: result.report.verdict, testsRun: result.report.testsRun, testsFailed: result.report.testsFailed, event: summarizeEvent(eventResult.event) });
+    if (eventResult.event.state_after === "BUILD") {
+      await cleanupEvaluatorScratch(workspace.metadata.worktreePath);
+    }
     state = eventResult.event.state_after;
   }
 
@@ -888,6 +907,8 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
     state: finalSnapshot?.state ?? state,
     context: finalSnapshot?.context ?? snapshot.context,
     failTimes: failTimesResult.failTimes,
+    generatorProvider,
+    evaluatorProvider,
     storePath,
     tasksDir,
     worktreesDir,
@@ -1276,6 +1297,10 @@ function latestCodeProduced(events: StoredEvent[]) {
     (event): event is StoredEvent & { payload: Extract<Event, { type: "CODE_PRODUCED" }> } => event.event_type === "CODE_PRODUCED"
   );
   return codeEvents[codeEvents.length - 1] ?? null;
+}
+
+async function cleanupEvaluatorScratch(worktreePath: string) {
+  await rm(path.join(worktreePath, ".anchor", "eval"), { recursive: true, force: true });
 }
 
 async function gitRoot(): Promise<{ ok: true; root: string } | { ok: false }> {
