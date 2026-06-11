@@ -693,6 +693,7 @@ async function runEvaluate(args: string[], storePath: string, tasksDir: string, 
 
   const adapter = readOption(args, "--provider") ?? readOption(args, "--adapter") ?? "fixture";
   const verdict = readOption(args, "--verdict");
+  const allowNetwork = isOptionPresent(args, "--allow-network");
   const store = createFileRunStore(storePath);
   const snapshot = await store.getCurrentState(taskId);
   if (!snapshot) {
@@ -717,8 +718,11 @@ async function runEvaluate(args: string[], storePath: string, tasksDir: string, 
     artifactsDir: tasksDir,
     workspace: workspace.metadata,
     contract: contract.content,
+    contractPath: contract.path,
     adapter,
-    verdict
+    verdict,
+    config: _config,
+    allowNetwork: allowNetwork || _config?.agent_allow_network === true
   });
   if (!result.ok) {
     return { ok: false, command: "evaluate", error: result, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };

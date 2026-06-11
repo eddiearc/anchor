@@ -4,10 +4,14 @@ import { getWorkspaceGitStatus, type WorkspaceMetadata } from "./workspaces.js";
 import { generatorReportPath } from "./generators.js";
 import { resolveProvider, type ProviderDefinition, type ProviderError } from "./providers.js";
 import { type EvalVerdict } from "./state-machine.js";
+import { composePrompt, type AnchorConfig } from "./config.js";
+import { contractPathForTask } from "./contracts.js";
 import {
   type CommandRunner,
   type CommandResult,
+  type RetryConfig,
   defaultCommandRunner,
+  defaultRetryConfig,
   runAgent,
   buildCodexArgv,
   codexCommand,
@@ -68,11 +72,14 @@ export type RunEvaluatorInput = {
   artifactsDir: string;
   workspace: WorkspaceMetadata;
   contract: string;
+  contractPath?: string;
   adapter: string;
   verdict?: string; // fixture-specific: forced verdict
   attempt?: number;
   generatorReportPath?: string;
   reportPath?: string;
+  config?: AnchorConfig;
+  allowNetwork?: boolean;
 };
 
 export async function runEvaluator(
@@ -212,13 +219,25 @@ async function runCodexEvaluator(
   }
 
   const command = codexCommand();
-  const prompt = buildEvaluatorPrompt(input, changedFiles);
-  const argv = buildCodexArgv(input.workspace.worktreePath, prompt);
+  const prompt = buildEvaluatorPrompt(input, changedFiles, generatorReportPathStr, generatorReportContent);
+  const allowNetwork = input.allowNetwork === true || input.config?.agent_allow_network === true;
+  const argv = buildCodexArgv(input.workspace.worktreePath, prompt, allowNetwork);
+  const envAllowlist = providerEnvAllowlist();
+  const retryConfig: RetryConfig = {
+    maxRetries: input.config?.agent_retry_max ?? defaultRetryConfig.maxRetries,
+    backoffMs: input.config?.agent_retry_backoff_ms ?? defaultRetryConfig.backoffMs
+  };
   const startedAt = new Date().toISOString();
 
   let result: CommandResult;
   try {
-    result = await runAgent(command, argv, input.workspace.worktreePath, runner);
+    result = await runAgent(command, argv, input.workspace.worktreePath, runner, retryConfig, {
+      env: buildProviderEnvironment(envAllowlist),
+      envAllowlist,
+      timeoutMs: providerTimeoutMs("CODEX"),
+      prompt,
+      contract: input.contract
+    });
   } catch (error) {
     if (isCommandUnavailable(error)) {
       return {
@@ -240,14 +259,14 @@ async function runCodexEvaluator(
   const report: EvaluatorReport = {
     adapter: "codex",
     provider: "codex",
-    verdict: verdictResult.verdict,
+    verdict: verdictResult.ok ? verdictResult.verdict : "FAIL",
     taskId: input.taskId,
     attempt: input.attempt,
     startedAt,
     finishedAt,
-    testsRun: verdictResult.testsRun,
-    testsFailed: verdictResult.testsFailed,
-    feedback: verdictResult.feedback,
+    testsRun: verdictResult.ok ? verdictResult.testsRun : 0,
+    testsFailed: verdictResult.ok ? verdictResult.testsFailed : 1,
+    feedback: verdictResult.ok ? verdictResult.feedback : verdictResult.message,
     filesInspected,
     generatorReportPath: generatorReportPathStr,
     command,
@@ -255,9 +274,22 @@ async function runCodexEvaluator(
     exitCode: result.exitCode,
     stdoutSummary: summarizeOutput(result.stdout),
     stderrSummary: summarizeOutput(result.stderr),
-    summary: `Codex evaluator returned ${verdictResult.verdict} (exit ${result.exitCode}, ${verdictResult.testsRun} tests, ${verdictResult.testsFailed} failed).`
+    summary: verdictResult.ok
+      ? `Codex evaluator returned ${verdictResult.verdict} (exit ${result.exitCode}, ${verdictResult.testsRun} tests, ${verdictResult.testsFailed} failed).`
+      : `Codex evaluator failed before a valid verdict (exit ${result.exitCode}): ${verdictResult.message}`
   };
   const reportPath = await writeEvaluatorReport(input.artifactsDir, input.taskId, report, input.reportPath);
+
+  if (!verdictResult.ok) {
+    return {
+      ok: false,
+      code: verdictResult.code,
+      message: verdictResult.message,
+      detail: verdictResult.detail,
+      report,
+      reportPath
+    };
+  }
 
   return {
     ok: true,
@@ -266,14 +298,24 @@ async function runCodexEvaluator(
   };
 }
 
-function buildEvaluatorPrompt(input: RunEvaluatorInput, changedFiles: string[]): string {
-  return [
+function buildEvaluatorPrompt(
+  input: RunEvaluatorInput,
+  changedFiles: string[],
+  generatorReportPathStr: string,
+  generatorReportContent: string
+): string {
+  const base = [
     "You are the Evaluator role inside Anchor.",
     `Task ID: ${input.taskId}`,
     `Worktree path: ${input.workspace.worktreePath}`,
+    `Approved contract path: ${input.contractPath ?? contractPathForTask(input.artifactsDir, input.taskId)}`,
+    `Generator report path: ${generatorReportPathStr}`,
     "",
     "Approved contract:",
     input.contract,
+    "",
+    "Generator report:",
+    generatorReportContent,
     "",
     "The Generator changed these files:",
     ...changedFiles.map((f) => `  - ${f}`),
@@ -293,14 +335,24 @@ function buildEvaluatorPrompt(input: RunEvaluatorInput, changedFiles: string[]):
     "- Do NOT read, write, or persist secrets or authentication tokens.",
     "- Do NOT perform network operations or install dependencies."
   ].join("\n");
+
+  return composePrompt(input.config, "evaluator_prompt", base);
 }
 
-type CodexVerdictResult = {
-  verdict: EvalVerdict;
-  feedback: string;
-  testsRun: number;
-  testsFailed: number;
-};
+type CodexVerdictResult =
+  | {
+      ok: true;
+      verdict: EvalVerdict;
+      feedback: string;
+      testsRun: number;
+      testsFailed: number;
+    }
+  | {
+      ok: false;
+      code: "CODEX_NO_VERDICT" | "CODEX_COMMAND_FAILED";
+      message: string;
+      detail?: string;
+    };
 
 async function readCodexVerdict(verdictPath: string, result: CommandResult): Promise<CodexVerdictResult> {
   const raw = await readOptional(verdictPath);
@@ -313,28 +365,78 @@ async function readCodexVerdict(verdictPath: string, result: CommandResult): Pro
         typeof parsed.feedback === "string"
       ) {
         return {
+          ok: true,
           verdict: parsed.verdict as EvalVerdict,
           feedback: parsed.feedback,
           testsRun: typeof parsed.testsRun === "number" ? parsed.testsRun : 0,
           testsFailed: typeof parsed.testsFailed === "number" ? parsed.testsFailed : 0
         };
       }
-    } catch {
-      // fall through to exit-code heuristic
+      return {
+        ok: false,
+        code: "CODEX_NO_VERDICT",
+        message: `Codex evaluator wrote an invalid verdict file: ${verdictPath}`,
+        detail: "Expected JSON object with verdict PASS|FAIL and string feedback."
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        code: "CODEX_NO_VERDICT",
+        message: `Codex evaluator wrote unparseable verdict JSON: ${verdictPath}`,
+        detail: error instanceof Error ? error.message : String(error)
+      };
     }
   }
 
-  // Fallback: use exit code to determine verdict
-  const verdict = result.exitCode === 0 ? "PASS" : "FAIL";
+  if (result.exitCode !== 0) {
+    return {
+      ok: false,
+      code: "CODEX_COMMAND_FAILED",
+      message: `Codex evaluator exited with code ${result.exitCode} without a valid verdict file.`,
+      detail: summarizeOutput(result.stderr || result.stdout)
+    };
+  }
+
   return {
-    verdict,
-    feedback:
-      raw !== null
-        ? `Unexpected verdict format in ${verdictPath}. Falling back to exit code (${result.exitCode}). Raw: ${raw.slice(0, 500)}`
-        : `No verdict file at ${verdictPath}. Falling back to exit code (${result.exitCode}).`,
-    testsRun: 0,
-    testsFailed: verdict === "PASS" ? 0 : 1
+    ok: false,
+    code: "CODEX_NO_VERDICT",
+    message: `Codex evaluator completed without writing a valid verdict file: ${verdictPath}`,
+    detail: summarizeOutput(result.stdout || result.stderr)
   };
+}
+
+function providerTimeoutMs(providerEnvPrefix: "CODEX") {
+  const raw = process.env[`ANCHOR_${providerEnvPrefix}_TIMEOUT_MS`];
+  if (!raw) return 10 * 60 * 1000;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10 * 60 * 1000;
+}
+
+function providerEnvAllowlist() {
+  return [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "XDG_CONFIG_HOME",
+    "XDG_CACHE_HOME"
+  ];
+}
+
+function buildProviderEnvironment(allowlist: string[]) {
+  const env: Record<string, string> = {};
+  for (const key of allowlist) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 export async function writeEvaluatorReport(

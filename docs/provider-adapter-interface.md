@@ -48,9 +48,10 @@ Evaluator providers receive:
 - `taskId`
 - `artifactsDir`
 - `workspace` metadata
-- approved contract content
+- approved contract path/content
 - provider id from `adapter`
 - optional verdict/config for fixture provider
+- optional generator report path
 - optional attempt and report paths
 
 Evaluator providers return a normalized `EvaluatorReport` with:
@@ -107,6 +108,21 @@ Codex receives only Anchor-owned inputs:
 Codex output is normalized to `GeneratorReport` and `CODE_PRODUCED` in the same shape as other generator providers. Failed Codex exits, no-change runs, or policy violations return stable JSON errors and do not append `CODE_PRODUCED`.
 
 See [docs/codex-provider.md](docs/codex-provider.md) for the Codex-specific runner contract.
+
+## Codex Evaluator Provider
+
+The Codex evaluator backend is a provider implementation, not a core workflow branch. `anchor evaluate <taskId> --provider codex` and the backward-compatible `--adapter codex` both resolve `codex` through the evaluator provider registry before invoking the Codex runner path.
+
+Codex receives only Anchor-owned evaluation inputs:
+
+- approved contract path/content
+- task id
+- workspace path
+- generator report path/content
+- changed files summary
+- required verdict file schema
+
+Codex output is normalized to `EvaluatorReport` and `EVAL_COMPLETE` in the same shape as other evaluator providers. A valid `PASS` verdict advances through the existing DONE transition; a valid `FAIL` verdict follows the existing retry path. Invalid or unparseable verdict output and command failures return stable JSON errors and do not append `EVAL_COMPLETE`.
 
 ## Pi Generator Provider
 
