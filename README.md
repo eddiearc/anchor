@@ -24,9 +24,9 @@ Anchor takes the architecture described in Anthropic's [Harness design for long-
 
 ---
 
-## Local CLI Install / Smoke
+## 5-minute Local CLI Quickstart
 
-R11 supports local tarball installation for smoke testing. Anchor is not published to npm in this milestone, and the unscoped `anchor` npm package name is already occupied, so use `npm pack` from this repository.
+Anchor is not published to npm in this milestone, and the unscoped `anchor` npm package name is already occupied, so use `npm pack` from this repository for a local install smoke.
 
 ```bash
 pnpm install
@@ -44,14 +44,16 @@ FIXTURE_REPO="$(mktemp -d)"
 git -C "$FIXTURE_REPO" init
 cd "$FIXTURE_REPO"
 
-"$PREFIX/bin/anchor" demo
-PLAN_JSON="$("$PREFIX/bin/anchor" plan "test task")"
-TASK_ID="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(0, "utf8")).taskId)' <<<"$PLAN_JSON")"
+"$PREFIX/bin/anchor" init
+RUN_JSON="$("$PREFIX/bin/anchor" run "test task")"
+TASK_ID="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(0, "utf8")).taskId)' <<<"$RUN_JSON")"
+"$PREFIX/bin/anchor" next "$TASK_ID"
+"$PREFIX/bin/anchor" contract "$TASK_ID"
 "$PREFIX/bin/anchor" status "$TASK_ID"
 "$PREFIX/bin/anchor" events "$TASK_ID"
 ```
 
-The installed CLI writes task and event data under the current repository's `.anchor/` directory by default. This smoke does not publish to npm, does not run a real Codex end-to-end flow, and does not implement the Codex Evaluator adapter.
+The installed CLI writes task and event data under the current repository's `.anchor/` directory by default. `anchor run` creates a task and contract, then stops for human approval; it does not generate code. Use `anchor next "$TASK_ID"` whenever you want the CLI to suggest the next command. This smoke does not publish to npm, does not run a real Codex end-to-end flow, and does not implement the Codex Evaluator adapter.
 
 ---
 

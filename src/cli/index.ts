@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
+import { mkdir, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import {
   anchorVersion,
@@ -35,6 +39,8 @@ import {
 const defaultStorePath = ".anchor/events.jsonl";
 const defaultTasksDir = ".anchor/tasks";
 const defaultWorktreesDir = ".anchor/worktrees";
+const defaultLocalConfigPath = ".anchor/config.yaml";
+const execFileAsync = promisify(execFile);
 
 type CliResult = {
   exitCode: number;
@@ -61,6 +67,18 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   const tasksDir = options.tasksDir ?? process.env.ANCHOR_TASKS_DIR ?? defaultTasksDir;
   const worktreesDir = options.worktreesDir ?? process.env.ANCHOR_WORKTREES_DIR ?? defaultWorktreesDir;
   const config: AnchorConfig = await loadAnchorConfig();
+
+  if (command === "init") {
+    return json(await runInit(storePath, tasksDir, worktreesDir));
+  }
+
+  if (command === "run") {
+    return json(await runRun(rest, storePath, tasksDir, config));
+  }
+
+  if (command === "next") {
+    return json(await runNext(rest[0], storePath, tasksDir, worktreesDir));
+  }
 
   if (command === "task") {
     return json(await runTask(rest, tasksDir, storePath));
@@ -125,6 +143,120 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   return {
     exitCode: 1,
     output: [`Unknown command: ${command}`, "", getAnchorHelp()].join("\n")
+  };
+}
+
+// ── init ──
+
+async function runInit(storePath: string, tasksDir: string, worktreesDir: string) {
+  const git = await gitRoot();
+  if (!git.ok) {
+    return {
+      ok: false,
+      error: "not_git_repo",
+      message: "Run anchor init inside a git repository.",
+      cwd: process.cwd()
+    };
+  }
+
+  const anchorDir = path.resolve(git.root, ".anchor");
+  const configPath = path.resolve(git.root, defaultLocalConfigPath);
+  const resolvedStorePath = path.resolve(git.root, storePath);
+  const resolvedTasksDir = path.resolve(git.root, tasksDir);
+  const resolvedWorktreesDir = path.resolve(git.root, worktreesDir);
+  await mkdir(anchorDir, { recursive: true });
+  await mkdir(path.dirname(resolvedStorePath), { recursive: true });
+  await mkdir(resolvedTasksDir, { recursive: true });
+  await mkdir(resolvedWorktreesDir, { recursive: true });
+
+  let configCreated = false;
+  if (!(await exists(configPath))) {
+    await writeFile(
+      configPath,
+      [
+        "# Anchor local quickstart config",
+        "# Global agent prompts still load from ~/.anchor/config.yaml unless ANCHOR_CONFIG_PATH is set.",
+        "agent: codex",
+        ""
+      ].join("\n")
+    );
+    configCreated = true;
+  }
+
+  return {
+    ok: true,
+    command: "init",
+    gitRoot: git.root,
+    anchorDir,
+    configPath,
+    configCreated,
+    storePath: resolvedStorePath,
+    tasksDir: resolvedTasksDir,
+    worktreesDir: resolvedWorktreesDir,
+    nextCommands: ["anchor run \"test task\""]
+  };
+}
+
+// ── run ──
+
+async function runRun(args: string[], storePath: string, tasksDir: string, config: AnchorConfig) {
+  const result = await runPlan(args, storePath, tasksDir, config);
+  if (!result.ok) {
+    return { command: "run", ...result };
+  }
+  const taskId = result.taskId;
+  if (!taskId) {
+    return { ok: false, command: "run", error: "task_id_missing", storePath, tasksDir };
+  }
+  return {
+    ...result,
+    command: "run",
+    nextCommands: nextCommandsForState(taskId, result.state, Boolean(result.contractPath))
+  };
+}
+
+// ── next ──
+
+async function runNext(taskId: string | undefined, storePath: string, tasksDir: string, worktreesDir: string) {
+  if (!taskId) {
+    return { ok: false, error: "task_id_required", storePath, tasksDir, worktreesDir };
+  }
+
+  const task = await readTask(taskId, tasksDir);
+  if (!task.ok) {
+    return { ok: false, error: "task_not_found", details: task, taskId, storePath, tasksDir, worktreesDir };
+  }
+
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(taskId);
+  if (!snapshot) {
+    return {
+      ok: true,
+      command: "next",
+      taskId,
+      state: null,
+      message: "Task exists but has not entered the Anchor state machine.",
+      storePath,
+      tasksDir,
+      worktreesDir,
+      nextCommands: [`anchor plan --task ${taskId}`]
+    };
+  }
+
+  const contract = await readContractArtifact(tasksDir, taskId);
+  if (!snapshot.state) {
+    return { ok: false, error: "task_state_missing", taskId, storePath, tasksDir, worktreesDir };
+  }
+  return {
+    ok: true,
+    command: "next",
+    taskId,
+    state: snapshot.state,
+    message: nextMessageForState(snapshot.state, Boolean(contract)),
+    storePath,
+    tasksDir,
+    worktreesDir,
+    nextCommands: nextCommandsForState(taskId, snapshot.state, Boolean(contract))
   };
 }
 
@@ -1124,6 +1256,66 @@ function latestCodeProduced(events: StoredEvent[]) {
     (event): event is StoredEvent & { payload: Extract<Event, { type: "CODE_PRODUCED" }> } => event.event_type === "CODE_PRODUCED"
   );
   return codeEvents[codeEvents.length - 1] ?? null;
+}
+
+async function gitRoot(): Promise<{ ok: true; root: string } | { ok: false }> {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    return { ok: true, root: stdout.trim() };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function exists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function nextCommandsForState(taskId: string, state: State | null | undefined, hasContract: boolean): string[] {
+  if (state === "HUMAN") {
+    return hasContract
+      ? [`anchor contract ${taskId}`, `anchor approve ${taskId}`, `anchor workspace create ${taskId}`]
+      : [`anchor status ${taskId}`];
+  }
+  if (state === "BUILD") {
+    return [`anchor workspace create ${taskId}`, `anchor generate ${taskId} --adapter fixture`];
+  }
+  if (state === "CHECK") {
+    return [`anchor evaluate ${taskId} --adapter fixture --verdict pass`];
+  }
+  if (state === "REVIEW") {
+    return [`anchor review ${taskId} --adapter fixture`, `anchor contract ${taskId}`];
+  }
+  if (state === "PLAN") {
+    return [`anchor status ${taskId}`];
+  }
+  if (state === "DONE") {
+    return [];
+  }
+  if (state === "ABORT") {
+    return [];
+  }
+  return [`anchor status ${taskId}`];
+}
+
+function nextMessageForState(state: State, hasContract: boolean): string {
+  if (state === "HUMAN" && hasContract) return "Review the contract, then approve it when ready.";
+  if (state === "HUMAN") return "Human input is required, but no contract artifact was found.";
+  if (state === "BUILD") return "Create or inspect a workspace, then run generation.";
+  if (state === "CHECK") return "Run evaluation for the generated changes.";
+  if (state === "DONE") return "Task is complete.";
+  if (state === "ABORT") return "Task is aborted.";
+  if (state === "REVIEW") return "Review the contract before continuing.";
+  return "Inspect task status before continuing.";
 }
 
 function fixtureEvents(fixture: "happy" | "retry", task: string): Array<{ emittedBy: string; event: Event }> {

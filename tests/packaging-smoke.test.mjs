@@ -69,24 +69,43 @@ test("npm tarball installs an anchor binary that works outside the source repo",
   assert.equal(await execText(anchorBin, ["--version"]), packageJson.version);
 
   await execFileAsync("git", ["init", fixtureRepo], { encoding: "utf8" });
+  const init = await execJson(anchorBin, ["init"], { cwd: fixtureRepo });
+  assert.equal(init.ok, true);
+  assert.equal(init.command, "init");
+  assert.equal(await exists(path.join(fixtureRepo, ".anchor", "config.yaml")), true);
+
   const demo = await execJson(anchorBin, ["demo"], { cwd: fixtureRepo });
   assert.equal(demo.ok, true);
   assert.equal(demo.finalState, "DONE");
   assert.equal(await exists(path.join(fixtureRepo, ".anchor", "events.jsonl")), true);
 
-  const plan = await execJson(anchorBin, ["plan", "test task"], { cwd: fixtureRepo });
-  assert.equal(plan.ok, true);
-  assert.equal(plan.command, "plan");
-  assert.equal(await exists(path.resolve(fixtureRepo, plan.contractPath)), true);
+  const run = await execJson(anchorBin, ["run", "test task"], { cwd: fixtureRepo });
+  assert.equal(run.ok, true);
+  assert.equal(run.command, "run");
+  assert.equal(run.state, "HUMAN");
+  assert.equal(await exists(path.resolve(fixtureRepo, run.contractPath)), true);
+  assert.deepEqual(run.nextCommands, [
+    `anchor contract ${run.taskId}`,
+    `anchor approve ${run.taskId}`,
+    `anchor workspace create ${run.taskId}`
+  ]);
 
-  const status = await execJson(anchorBin, ["status", plan.taskId], { cwd: fixtureRepo });
+  const next = await execJson(anchorBin, ["next", run.taskId], { cwd: fixtureRepo });
+  assert.equal(next.ok, true);
+  assert.equal(next.state, "HUMAN");
+  assert.deepEqual(next.nextCommands, run.nextCommands);
+
+  const contract = await execJson(anchorBin, ["contract", run.taskId], { cwd: fixtureRepo });
+  assert.equal(contract.ok, true);
+
+  const status = await execJson(anchorBin, ["status", run.taskId], { cwd: fixtureRepo });
   assert.equal(status.ok, true);
-  assert.equal(status.taskId, plan.taskId);
+  assert.equal(status.taskId, run.taskId);
   assert.equal(status.state, "HUMAN");
 
-  const events = await execJson(anchorBin, ["events", plan.taskId], { cwd: fixtureRepo });
+  const events = await execJson(anchorBin, ["events", run.taskId], { cwd: fixtureRepo });
   assert.equal(events.ok, true);
-  assert.equal(events.taskId, plan.taskId);
+  assert.equal(events.taskId, run.taskId);
   assert.deepEqual(
     events.events.map((event) => event.event_type),
     ["TASK_RECEIVED", "CONTRACT_PRODUCED"]
