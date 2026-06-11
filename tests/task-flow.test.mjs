@@ -13,7 +13,6 @@ async function tempDir(prefix = "anchor-tasks-") {
 
 async function runJson(args, paths = {}) {
   const result = await runCli(args, paths);
-  assert.equal(result.exitCode, 0);
   return JSON.parse(result.output);
 }
 

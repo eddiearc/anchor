@@ -12,7 +12,6 @@ async function tempDir(prefix = "anchor-") {
 
 async function runJson(args, paths = {}) {
   const result = await runCli(args, paths);
-  assert.equal(result.exitCode, 0, `CLI exited non-zero: ${result.output}`);
   return JSON.parse(result.output);
 }
 

@@ -211,6 +211,11 @@ async function runRun(args: string[], storePath: string, tasksDir: string, confi
   return {
     ...result,
     command: "run",
+    artifacts: {
+      contractPath: result.contractPath,
+      contractSha: result.contractSha
+    },
+    nextActions: nextActionsForState(taskId, result.state, Boolean(result.contractPath)),
     nextCommands: nextCommandsForState(taskId, result.state, Boolean(result.contractPath))
   };
 }
@@ -239,6 +244,14 @@ async function runNext(taskId: string | undefined, storePath: string, tasksDir: 
       storePath,
       tasksDir,
       worktreesDir,
+      nextActions: [
+        {
+          action: "plan_task",
+          command: ["anchor", "plan", "--task", taskId],
+          requires: ["task_exists"],
+          description: "Start the Anchor state machine for this task."
+        }
+      ],
       nextCommands: [`anchor plan --task ${taskId}`]
     };
   }
@@ -256,6 +269,7 @@ async function runNext(taskId: string | undefined, storePath: string, tasksDir: 
     storePath,
     tasksDir,
     worktreesDir,
+    nextActions: nextActionsForState(taskId, snapshot.state, Boolean(contract)),
     nextCommands: nextCommandsForState(taskId, snapshot.state, Boolean(contract))
   };
 }
@@ -1281,30 +1295,123 @@ async function exists(filePath: string): Promise<boolean> {
 }
 
 function nextCommandsForState(taskId: string, state: State | null | undefined, hasContract: boolean): string[] {
+  return nextActionsForState(taskId, state, hasContract)
+    .filter((action) => action.command.length > 0)
+    .map((action) => action.command.join(" "));
+}
+
+function nextActionsForState(taskId: string, state: State | null | undefined, hasContract: boolean) {
   if (state === "HUMAN") {
     return hasContract
-      ? [`anchor contract ${taskId}`, `anchor approve ${taskId}`, `anchor workspace create ${taskId}`]
-      : [`anchor status ${taskId}`];
+      ? [
+          {
+            action: "view_contract",
+            command: ["anchor", "contract", taskId],
+            requires: ["contract_exists"],
+            description: "Read the generated contract artifact."
+          },
+          {
+            action: "approve_contract",
+            command: ["anchor", "approve", taskId],
+            requires: ["contract_reviewed"],
+            description: "Approve the contract and move the task to BUILD."
+          },
+          {
+            action: "create_workspace",
+            command: ["anchor", "workspace", "create", taskId],
+            requires: ["contract_approved", "state_BUILD"],
+            description: "Create the isolated git worktree after approval."
+          }
+        ]
+      : [
+          {
+            action: "inspect_status",
+            command: ["anchor", "status", taskId],
+            requires: ["task_started"],
+            description: "Inspect task status because no contract artifact was found."
+          }
+        ];
   }
   if (state === "BUILD") {
-    return [`anchor workspace create ${taskId}`, `anchor generate ${taskId} --adapter fixture`];
+    return [
+      {
+        action: "create_workspace",
+        command: ["anchor", "workspace", "create", taskId],
+        requires: ["state_BUILD", "contract_approved"],
+        description: "Create or confirm the isolated git worktree."
+      },
+      {
+        action: "generate",
+        command: ["anchor", "generate", taskId, "--adapter", "fixture"],
+        requires: ["state_BUILD", "workspace_exists"],
+        description: "Run fixture generation."
+      }
+    ];
   }
   if (state === "CHECK") {
-    return [`anchor evaluate ${taskId} --adapter fixture --verdict pass`];
+    return [
+      {
+        action: "evaluate",
+        command: ["anchor", "evaluate", taskId, "--adapter", "fixture", "--verdict", "pass"],
+        requires: ["state_CHECK", "workspace_exists", "generator_report_exists"],
+        description: "Run fixture evaluation."
+      }
+    ];
   }
   if (state === "REVIEW") {
-    return [`anchor review ${taskId} --adapter fixture`, `anchor contract ${taskId}`];
+    return [
+      {
+        action: "review_contract",
+        command: ["anchor", "review", taskId, "--adapter", "fixture"],
+        requires: ["state_REVIEW", "contract_exists"],
+        description: "Review the generated contract."
+      },
+      {
+        action: "view_contract",
+        command: ["anchor", "contract", taskId],
+        requires: ["contract_exists"],
+        description: "Read the generated contract artifact."
+      }
+    ];
   }
   if (state === "PLAN") {
-    return [`anchor status ${taskId}`];
+    return [
+      {
+        action: "inspect_status",
+        command: ["anchor", "status", taskId],
+        requires: ["task_started"],
+        description: "Inspect planning status."
+      }
+    ];
   }
   if (state === "DONE") {
-    return [];
+    return [
+      {
+        action: "done",
+        command: [],
+        requires: ["state_DONE"],
+        description: "Task is complete."
+      }
+    ];
   }
   if (state === "ABORT") {
-    return [];
+    return [
+      {
+        action: "aborted",
+        command: [],
+        requires: ["state_ABORT"],
+        description: "Task is aborted."
+      }
+    ];
   }
-  return [`anchor status ${taskId}`];
+  return [
+    {
+      action: "inspect_status",
+      command: ["anchor", "status", taskId],
+      requires: ["task_started"],
+      description: "Inspect task status before continuing."
+    }
+  ];
 }
 
 function nextMessageForState(state: State, hasContract: boolean): string {
@@ -1406,7 +1513,11 @@ function text(output: string): CliResult {
 }
 
 function json(value: unknown): CliResult {
-  return { exitCode: 0, output: JSON.stringify(value, null, 2) };
+  return { exitCode: isFailureResult(value) ? 1 : 0, output: JSON.stringify(value, null, 2) };
+}
+
+function isFailureResult(value: unknown): boolean {
+  return typeof value === "object" && value !== null && "ok" in value && value.ok === false;
 }
 
 function isCliEntrypoint() {

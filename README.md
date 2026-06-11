@@ -55,6 +55,8 @@ TASK_ID="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSy
 
 The installed CLI writes task and event data under the current repository's `.anchor/` directory by default. `anchor run` creates a task and contract, then stops for human approval; it does not generate code. Use `anchor next "$TASK_ID"` whenever you want the CLI to suggest the next command. This smoke does not publish to npm, does not run a real Codex end-to-end flow, and does not implement the Codex Evaluator adapter.
 
+For agent integrations, use the JSON/exit-code protocol in [docs/agent-cli-protocol.md](docs/agent-cli-protocol.md). Anchor's canonical task identifier is `taskId`.
+
 ---
 
 ## The Four Roles

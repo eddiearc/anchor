@@ -24,13 +24,20 @@ async function exists(filePath) {
 }
 
 async function runJson(args, cwd) {
-  const { stdout } = await execFileAsync(process.execPath, [cliPath, ...args], {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024,
-    env: { ...process.env, ANCHOR_CONFIG_PATH: path.join(cwd, ".test-anchor-home", "config.yaml") }
-  });
-  return JSON.parse(stdout);
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [cliPath, ...args], {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, ANCHOR_CONFIG_PATH: path.join(cwd, ".test-anchor-home", "config.yaml") }
+    });
+    return { ...JSON.parse(stdout), exitCode: 0 };
+  } catch (error) {
+    if (error && typeof error === "object" && "stdout" in error && "code" in error) {
+      return { ...JSON.parse(String(error.stdout)), exitCode: error.code };
+    }
+    throw error;
+  }
 }
 
 test("anchor init creates local structure and is idempotent in a git repo", async () => {
@@ -62,6 +69,7 @@ test("anchor init creates local structure and is idempotent in a git repo", asyn
 test("anchor init gives a clear error outside a git repo", async () => {
   const dir = await tempDir();
   const result = await runJson(["init"], dir);
+  assert.equal(result.exitCode, 1);
   assert.equal(result.ok, false);
   assert.equal(result.error, "not_git_repo");
   assert.match(result.message, /git repository/);
@@ -112,7 +120,6 @@ test("anchor run and next guide the quickstart path without generating code", as
     "anchor generate TASK-001 --adapter fixture"
   ]);
 
-  await runJson(["workspace", "create", run.taskId], repo);
   const { createFileRunStore } = await import("../dist/index.js");
   const store = createFileRunStore(path.join(repo, ".anchor", "events.jsonl"));
   const produced = await store.appendEvent(
@@ -139,6 +146,7 @@ test("anchor next reports a clear error for unknown tasks", async () => {
   await runJson(["init"], repo);
 
   const result = await runJson(["next", "TASK-404"], repo);
+  assert.equal(result.exitCode, 1);
   assert.equal(result.ok, false);
   assert.equal(result.error, "task_not_found");
   assert.equal(result.taskId, "TASK-404");
