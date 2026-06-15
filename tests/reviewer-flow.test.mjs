@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -129,6 +129,76 @@ test("fixture reviewer NEEDS_REVISION returns to PLAN and consumes review retry"
   assert.equal(result.state, "PLAN");
   assert.equal(result.event.event_type, "REVIEW_COMPLETE");
   assert.equal(result.event.payload.verdict, "NEEDS_REVISION");
+  assert.match(result.event.payload.feedback, /structural issues requiring revision/);
+  assert.ok(result.event.payload.report_path.endsWith("reviewer-report.json"));
+});
+
+test("run-wait passes reviewer NEEDS_REVISION feedback into the next planner prompt", async () => {
+  const dir = await tempDir();
+  const storePath = path.join(dir, "events.jsonl");
+  const tasksDir = path.join(dir, "tasks");
+  const { taskId } = await setupReviewState(storePath, tasksDir);
+
+  const review = await runJson(
+    ["review", taskId, "--adapter", "fixture", "--verdict", "needs_revision"],
+    { storePath, tasksDir }
+  );
+  assert.equal(review.state, "PLAN");
+
+  const fakeCodex = path.join(dir, "fake-codex-planner.sh");
+  await writeFile(fakeCodex, [
+    "#!/bin/sh",
+    "last=''",
+    "for arg in \"$@\"; do last=\"$arg\"; done",
+    "case \"$last\" in *\"Previous reviewer feedback:\"*\"Fixture reviewer found structural issues requiring revision\"*) ;; *) echo missing-reviewer-feedback >&2; exit 3 ;; esac",
+    "cat <<'YAML'",
+    "mode: thorough",
+    "reasoning: revised with reviewer feedback",
+    "affected_scope:",
+    "  - src/**",
+    "contract:",
+    `  id: "${taskId}"`,
+    "  goal:",
+    "    summary: revised contract",
+    "  files:",
+    "    allowlist:",
+    "      - src/**",
+    "    denylist:",
+    "      - secrets/**",
+    "  constraints:",
+    "    - Address reviewer feedback",
+    "  steps:",
+    "    - id: \"1\"",
+    "      description: revised step",
+    "      acceptance:",
+    "        - reviewer feedback is addressed",
+    "  completion_gate:",
+    "    type: all",
+    "    conditions:",
+    "      - reviewer feedback is addressed",
+    "YAML"
+  ].join("\n"));
+  await chmod(fakeCodex, 0o755);
+
+  process.env.ANCHOR_CODEX_COMMAND = fakeCodex;
+  try {
+    const result = await runCli(["run-wait", taskId], {
+      storePath,
+      tasksDir,
+      config: {
+        planner_provider: "codex",
+        reviewer_provider: "fixture",
+        generator_provider: "fixture",
+        evaluator_provider: "fixture"
+      }
+    });
+    const json = JSON.parse(result.output);
+    assert.equal(json.ok, true);
+    assert.equal(json.state, "HUMAN");
+    assert.equal(json.steps.some((step) => step.command === "plan" && step.ok === true), true);
+  } finally {
+    delete process.env.ANCHOR_CODEX_COMMAND;
+  }
 });
 
 test("review requires REVIEW state", async () => {

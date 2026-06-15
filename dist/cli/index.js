@@ -307,6 +307,7 @@ async function producePlanForTask(taskId, taskDescription, args, storePath, task
         };
     }
     const store = createFileRunStore(storePath);
+    const previousReview = latestRevisionReview(await store.listEvents(taskId));
     const mode = parseMode(readOption(args, "--mode"));
     const planResult = await runPlanner({
         taskId,
@@ -315,7 +316,9 @@ async function producePlanForTask(taskId, taskDescription, args, storePath, task
         adapter,
         repoPath: git.root,
         config,
-        mode
+        mode,
+        previousReviewerFeedback: previousReview?.payload.feedback ?? null,
+        previousReviewerReportPath: previousReview?.payload.report_path ?? null
     });
     if (!planResult.ok) {
         return { ok: false, error: planResult, taskId, storePath, tasksDir };
@@ -841,7 +844,7 @@ async function runReview(args, storePath, tasksDir, _config) {
     if (!result.ok) {
         return { ok: false, command: "review", error: result, taskId, state: snapshot.state, storePath, tasksDir };
     }
-    const eventResult = await store.appendEvent(taskId, { type: "REVIEW_COMPLETE", verdict: result.report.verdict }, "reviewer");
+    const eventResult = await store.appendEvent(taskId, { type: "REVIEW_COMPLETE", verdict: result.report.verdict, feedback: result.report.feedback, report_path: result.reportPath }, "reviewer");
     if (!eventResult.ok) {
         return { ok: false, command: "review", error: eventResult, taskId, state: snapshot.state, storePath, tasksDir, reportPath: result.reportPath };
     }
@@ -1153,6 +1156,10 @@ function latestCodeProduced(events) {
 function latestFailedEvaluation(events) {
     const evalEvents = events.filter((event) => event.payload.type === "EVAL_COMPLETE" && event.payload.verdict === "FAIL");
     return evalEvents[evalEvents.length - 1] ?? null;
+}
+function latestRevisionReview(events) {
+    const reviewEvents = events.filter((event) => event.payload.type === "REVIEW_COMPLETE" && event.payload.verdict === "NEEDS_REVISION");
+    return reviewEvents[reviewEvents.length - 1] ?? null;
 }
 async function cleanupEvaluatorScratch(worktreePath) {
     await rm(path.join(worktreePath, ".anchor", "eval"), { recursive: true, force: true });

@@ -415,6 +415,7 @@ async function producePlanForTask(
   }
 
   const store = createFileRunStore(storePath);
+  const previousReview = latestRevisionReview(await store.listEvents(taskId));
   const mode = parseMode(readOption(args, "--mode"));
   const planResult = await runPlanner({
     taskId,
@@ -423,7 +424,9 @@ async function producePlanForTask(
     adapter,
     repoPath: git.root,
     config,
-    mode
+    mode,
+    previousReviewerFeedback: previousReview?.payload.feedback ?? null,
+    previousReviewerReportPath: previousReview?.payload.report_path ?? null
   });
   if (!planResult.ok) {
     return { ok: false, error: planResult, taskId, storePath, tasksDir };
@@ -1056,7 +1059,7 @@ async function runReview(args: string[], storePath: string, tasksDir: string, _c
 
   const eventResult = await store.appendEvent(
     taskId,
-    { type: "REVIEW_COMPLETE", verdict: result.report.verdict },
+    { type: "REVIEW_COMPLETE", verdict: result.report.verdict, feedback: result.report.feedback, report_path: result.reportPath },
     "reviewer"
   );
   if (!eventResult.ok) {
@@ -1451,6 +1454,14 @@ function latestFailedEvaluation(events: StoredEvent[]) {
       event.payload.type === "EVAL_COMPLETE" && event.payload.verdict === "FAIL"
   );
   return evalEvents[evalEvents.length - 1] ?? null;
+}
+
+function latestRevisionReview(events: StoredEvent[]) {
+  const reviewEvents = events.filter(
+    (event): event is StoredEvent & { payload: Extract<Event, { type: "REVIEW_COMPLETE" }> } =>
+      event.payload.type === "REVIEW_COMPLETE" && event.payload.verdict === "NEEDS_REVISION"
+  );
+  return reviewEvents[reviewEvents.length - 1] ?? null;
 }
 
 async function cleanupEvaluatorScratch(worktreePath: string) {

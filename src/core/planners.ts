@@ -22,6 +22,8 @@ export type RunPlannerInput = {
   repoPath: string;
   config?: AnchorConfig;
   mode?: "quick" | "standard" | "thorough";
+  previousReviewerFeedback?: string | null;
+  previousReviewerReportPath?: string | null;
 };
 
 export type PlannerOk = {
@@ -132,12 +134,24 @@ async function runCodexPlanner(
 // ── prompt ──
 
 function buildPlannerPrompt(input: RunPlannerInput, contractPath: string): string {
+  const previousFeedback = input.previousReviewerFeedback?.trim();
+  const previousFeedbackSection = previousFeedback
+    ? [
+        "",
+        "Previous reviewer feedback:",
+        `Report path: ${input.previousReviewerReportPath ?? "(not recorded)"}`,
+        previousFeedback,
+        "",
+        "This is a contract revision pass. Produce a revised contract that addresses the reviewer feedback explicitly."
+      ]
+    : [];
   const base = [
     "You are the Planner role inside Anchor, a contract-driven coding harness.",
     "Your job: analyze the task, explore the codebase, and produce a structured contract.",
     "",
     "TASK:",
     input.taskDescription,
+    ...previousFeedbackSection,
     "",
     "OUTPUT INSTRUCTIONS:",
     `1. Explore the codebase to understand scope, existing patterns, and affected files.`,

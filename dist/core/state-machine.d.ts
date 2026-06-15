@@ -23,6 +23,8 @@ export type ContractProducedEvent = {
 export type ReviewCompleteEvent = {
     type: "REVIEW_COMPLETE";
     verdict: ReviewVerdict;
+    feedback?: string;
+    report_path?: string;
 };
 export type ContractApprovedEvent = {
     type: "CONTRACT_APPROVED";

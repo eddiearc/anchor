@@ -8,6 +8,8 @@ export type RunPlannerInput = {
     repoPath: string;
     config?: AnchorConfig;
     mode?: "quick" | "standard" | "thorough";
+    previousReviewerFeedback?: string | null;
+    previousReviewerReportPath?: string | null;
 };
 export type PlannerOk = {
     ok: true;
