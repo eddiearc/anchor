@@ -8,6 +8,15 @@
 
 agent: codex
 
+# Default provider used by Planner, Reviewer, Generator, and Evaluator unless
+# a role-specific provider below overrides it. CLI flags still win per command.
+provider: codex
+
+# planner_provider: codex
+# reviewer_provider: codex
+# generator_provider: codex
+# evaluator_provider: codex
+
 # ---- Global — injected into ALL roles
 # Use for team conventions, project standards, language prefs.
 prompt: |

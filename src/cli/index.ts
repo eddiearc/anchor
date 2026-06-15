@@ -52,7 +52,11 @@ type CliOptions = {
   storePath?: string;
   tasksDir?: string;
   worktreesDir?: string;
+  repoPath?: string;
+  config?: AnchorConfig;
 };
+
+type GitRootResult = { ok: true; root: string } | { ok: false };
 
 export async function runCli(args: string[], options: CliOptions = {}): Promise<CliResult> {
   if (args.includes("--version") || args.includes("-v")) {
@@ -64,17 +68,18 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   }
 
   const [command, ...rest] = args;
-  const storePath = options.storePath ?? process.env.ANCHOR_STORE_PATH ?? defaultStorePath;
-  const tasksDir = options.tasksDir ?? process.env.ANCHOR_TASKS_DIR ?? defaultTasksDir;
-  const worktreesDir = options.worktreesDir ?? process.env.ANCHOR_WORKTREES_DIR ?? defaultWorktreesDir;
-  const config: AnchorConfig = await loadAnchorConfig();
+  const git = options.repoPath ? { ok: true as const, root: options.repoPath } : await gitRoot();
+  const storePath = resolveDefaultPath(options.storePath ?? process.env.ANCHOR_STORE_PATH, defaultStorePath, git);
+  const tasksDir = resolveDefaultPath(options.tasksDir ?? process.env.ANCHOR_TASKS_DIR, defaultTasksDir, git);
+  const worktreesDir = resolveDefaultPath(options.worktreesDir ?? process.env.ANCHOR_WORKTREES_DIR, defaultWorktreesDir, git);
+  const config: AnchorConfig = options.config ?? await loadAnchorConfig();
 
   if (command === "run") {
-    return json(await runRun(rest, storePath, tasksDir, config));
+    return json(await runRun(rest, storePath, tasksDir, config, git));
   }
 
   if (command === "next") {
-    return json(await runNext(rest[0], storePath, tasksDir, worktreesDir));
+    return json(await runNext(rest[0], storePath, tasksDir, worktreesDir, config));
   }
 
   if (command === "task") {
@@ -82,7 +87,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   }
 
   if (command === "plan") {
-    return json(await runPlan(rest, storePath, tasksDir, config));
+    return json(await runPlan(rest, storePath, tasksDir, config, git));
   }
 
   if (command === "contract") {
@@ -145,8 +150,8 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
 
 // ── run ──
 
-async function runRun(args: string[], storePath: string, tasksDir: string, config: AnchorConfig) {
-  const result = await runPlan(args, storePath, tasksDir, config);
+async function runRun(args: string[], storePath: string, tasksDir: string, config: AnchorConfig, git: GitRootResult) {
+  const result = await runPlan(args, storePath, tasksDir, config, git);
   if (!result.ok) {
     return { command: "run", ...result };
   }
@@ -161,14 +166,14 @@ async function runRun(args: string[], storePath: string, tasksDir: string, confi
       contractPath: result.contractPath,
       contractSha: result.contractSha
     },
-    nextActions: nextActionsForState(taskId, result.state, Boolean(result.contractPath)),
-    nextCommands: nextCommandsForState(taskId, result.state, Boolean(result.contractPath))
+    nextActions: nextActionsForState(taskId, result.state, Boolean(result.contractPath), config),
+    nextCommands: nextCommandsForState(taskId, result.state, Boolean(result.contractPath), config)
   };
 }
 
 // ── next ──
 
-async function runNext(taskId: string | undefined, storePath: string, tasksDir: string, worktreesDir: string) {
+async function runNext(taskId: string | undefined, storePath: string, tasksDir: string, worktreesDir: string, config: AnchorConfig) {
   if (!taskId) {
     return { ok: false, error: "task_id_required", storePath, tasksDir, worktreesDir };
   }
@@ -215,15 +220,24 @@ async function runNext(taskId: string | undefined, storePath: string, tasksDir: 
     storePath,
     tasksDir,
     worktreesDir,
-    nextActions: nextActionsForState(taskId, snapshot.state, Boolean(contract)),
-    nextCommands: nextCommandsForState(taskId, snapshot.state, Boolean(contract))
+    nextActions: nextActionsForState(taskId, snapshot.state, Boolean(contract), config),
+    nextCommands: nextCommandsForState(taskId, snapshot.state, Boolean(contract), config)
   };
 }
 
 // ── plan ──
 
-async function runPlan(args: string[], storePath: string, tasksDir: string, config: AnchorConfig) {
-  const adapter = readOption(args, "--adapter") ?? "fixture";
+async function runPlan(args: string[], storePath: string, tasksDir: string, config: AnchorConfig, git: GitRootResult) {
+  if (!git.ok) {
+    return {
+      ok: false,
+      error: "not_git_repo",
+      message: "Run anchor inside a git repository.",
+      cwd: process.cwd()
+    };
+  }
+
+  const adapter = readOption(args, "--provider") ?? readOption(args, "--adapter") ?? defaultProvider(config, "planner");
   const taskIdFlag = readOption(args, "--task");
   let taskStr: string;
   let taskId: string;
@@ -276,7 +290,7 @@ async function runPlan(args: string[], storePath: string, tasksDir: string, conf
     taskDescription: taskStr,
     artifactsDir: tasksDir,
     adapter,
-    repoPath: process.cwd(),
+    repoPath: git.root,
     config,
     mode
   });
@@ -553,7 +567,7 @@ async function runGenerate(args: string[], storePath: string, tasksDir: string, 
     return { ok: false, error: "task_id_required", storePath, tasksDir, worktreesDir };
   }
 
-  const adapter = readOption(args, "--provider") ?? readOption(args, "--adapter") ?? "fixture";
+  const adapter = readOption(args, "--provider") ?? readOption(args, "--adapter") ?? defaultProvider(_config, "generator");
   const fixture = readOption(args, "--fixture");
   const allowNetwork = isOptionPresent(args, "--allow-network");
   const store = createFileRunStore(storePath);
@@ -637,7 +651,7 @@ async function runEvaluate(args: string[], storePath: string, tasksDir: string, 
     return { ok: false, error: "task_id_required", storePath, tasksDir, worktreesDir };
   }
 
-  const adapter = readOption(args, "--provider") ?? readOption(args, "--adapter") ?? "fixture";
+  const adapter = readOption(args, "--provider") ?? readOption(args, "--adapter") ?? defaultProvider(_config, "evaluator");
   const verdict = readOption(args, "--verdict");
   const allowNetwork = isOptionPresent(args, "--allow-network");
   const store = createFileRunStore(storePath);
@@ -721,8 +735,8 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
   }
 
   const sharedProvider = readOption(args, "--provider") ?? readOption(args, "--adapter");
-  const generatorProvider = readOption(args, "--generator-provider") ?? readOption(args, "--generator-adapter") ?? sharedProvider ?? "fixture";
-  const evaluatorProvider = readOption(args, "--evaluator-provider") ?? readOption(args, "--evaluator-adapter") ?? sharedProvider ?? "fixture";
+  const generatorProvider = readOption(args, "--generator-provider") ?? readOption(args, "--generator-adapter") ?? sharedProvider ?? defaultProvider(_config, "generator");
+  const evaluatorProvider = readOption(args, "--evaluator-provider") ?? readOption(args, "--evaluator-adapter") ?? sharedProvider ?? defaultProvider(_config, "evaluator");
   const allowNetwork = isOptionPresent(args, "--allow-network");
   const failTimesResult = readFailTimes(args);
   if (!failTimesResult.ok) {
@@ -808,7 +822,7 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
       reportPath: evaluatorAttemptReportPath(tasksDir, taskId, attempt),
       config: _config,
       allowNetwork: allowNetwork || _config?.agent_allow_network === true,
-      retryFailTimes: failTimesResult.failTimes
+      retryFailTimes: evaluatorProvider === "fixture" ? failTimesResult.failTimes : undefined
     });
     if (!result.ok) {
       return { ok: false, command: "run-retry", error: result, taskId, state, storePath, tasksDir, worktreesDir, steps };
@@ -850,7 +864,6 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
     taskId,
     state: finalSnapshot?.state ?? state,
     context: finalSnapshot?.context ?? snapshot.context,
-    failTimes: failTimesResult.failTimes,
     generatorProvider,
     evaluatorProvider,
     storePath,
@@ -868,7 +881,7 @@ async function runReview(args: string[], storePath: string, tasksDir: string, _c
     return { ok: false, error: "task_id_required", storePath, tasksDir };
   }
 
-  const adapter = readOption(args, "--adapter") ?? "fixture";
+  const adapter = readOption(args, "--provider") ?? readOption(args, "--adapter") ?? defaultProvider(_config, "reviewer");
   const verdict = readOption(args, "--verdict");
   const store = createFileRunStore(storePath);
   const snapshot = await store.getCurrentState(taskId);
@@ -1247,7 +1260,22 @@ async function cleanupEvaluatorScratch(worktreePath: string) {
   await rm(path.join(worktreePath, ".anchor", "eval"), { recursive: true, force: true });
 }
 
-async function gitRoot(): Promise<{ ok: true; root: string } | { ok: false }> {
+function resolveDefaultPath(explicitPath: string | undefined, defaultPath: string, git: GitRootResult): string {
+  if (explicitPath) return explicitPath;
+  if (git.ok) return path.resolve(git.root, defaultPath);
+  return defaultPath;
+}
+
+function defaultProvider(config: AnchorConfig, role: "planner" | "reviewer" | "generator" | "evaluator"): string {
+  const roleKey = `${role}_provider` as keyof AnchorConfig;
+  const roleProvider = config[roleKey];
+  if (typeof roleProvider === "string" && roleProvider.trim()) return roleProvider.trim();
+  if (typeof config.provider === "string" && config.provider.trim()) return config.provider.trim();
+  if (typeof config.agent === "string" && config.agent.trim()) return config.agent.trim();
+  return "codex";
+}
+
+async function gitRoot(): Promise<GitRootResult> {
   try {
     const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
       cwd: process.cwd(),
@@ -1259,13 +1287,13 @@ async function gitRoot(): Promise<{ ok: true; root: string } | { ok: false }> {
   }
 }
 
-function nextCommandsForState(taskId: string, state: State | null | undefined, hasContract: boolean): string[] {
-  return nextActionsForState(taskId, state, hasContract)
+function nextCommandsForState(taskId: string, state: State | null | undefined, hasContract: boolean, config: AnchorConfig): string[] {
+  return nextActionsForState(taskId, state, hasContract, config)
     .filter((action) => action.command.length > 0)
     .map((action) => action.command.join(" "));
 }
 
-function nextActionsForState(taskId: string, state: State | null | undefined, hasContract: boolean) {
+function nextActionsForState(taskId: string, state: State | null | undefined, hasContract: boolean, config: AnchorConfig) {
   if (state === "HUMAN") {
     return hasContract
       ? [
@@ -1298,6 +1326,7 @@ function nextActionsForState(taskId: string, state: State | null | undefined, ha
         ];
   }
   if (state === "BUILD") {
+    const provider = defaultProvider(config, "generator");
     return [
       {
         action: "create_workspace",
@@ -1307,27 +1336,31 @@ function nextActionsForState(taskId: string, state: State | null | undefined, ha
       },
       {
         action: "generate",
-        command: ["anchor", "generate", taskId, "--adapter", "fixture"],
+        command: ["anchor", "generate", taskId, "--provider", provider],
         requires: ["state_BUILD", "workspace_exists"],
-        description: "Run fixture generation."
+        description: "Run code generation."
       }
     ];
   }
   if (state === "CHECK") {
+    const provider = defaultProvider(config, "evaluator");
+    const command = ["anchor", "evaluate", taskId, "--provider", provider];
+    if (provider === "fixture") command.push("--verdict", "pass");
     return [
       {
         action: "evaluate",
-        command: ["anchor", "evaluate", taskId, "--adapter", "fixture", "--verdict", "pass"],
+        command,
         requires: ["state_CHECK", "workspace_exists", "generator_report_exists"],
-        description: "Run fixture evaluation."
+        description: "Run evaluation."
       }
     ];
   }
   if (state === "REVIEW") {
+    const provider = defaultProvider(config, "reviewer");
     return [
       {
         action: "review_contract",
-        command: ["anchor", "review", taskId, "--adapter", "fixture"],
+        command: ["anchor", "review", taskId, "--provider", provider],
         requires: ["state_REVIEW", "contract_exists"],
         description: "Review the generated contract."
       },

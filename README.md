@@ -735,7 +735,7 @@ ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor generate <runId> --adapter fixture
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor generate <runId> --adapter codex
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor evaluate <runId> --adapter fixture --verdict pass
-ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor run-retry <runId> --fail-times 1
+ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor run-retry <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor workspace status <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor workspace cleanup <runId>
 ANCHOR_STORE_PATH=/tmp/anchor-runs.jsonl ANCHOR_RUNS_DIR=/tmp/anchor-runs ANCHOR_WORKTREES_DIR=/tmp/anchor-worktrees pnpm anchor status <runId>
@@ -859,12 +859,12 @@ Then it appends `EVAL_COMPLETE(evaluator)` with verdict, report path, tests run,
 R19 retry orchestration runs through the same generator/evaluator provider interfaces used by single-step commands:
 
 ```bash
-anchor run-retry <runId> --fail-times <n>
-anchor run-retry <runId> --generator-provider fixture --evaluator-provider fixture --fail-times <n>
+anchor run-retry <runId>
+anchor run-retry <runId> --provider codex
 anchor run-retry <runId> --generator-provider codex --evaluator-provider pi --allow-network
 ```
 
-The run must already be approved and have an active workspace. `run-retry` accepts current state `BUILD` or `CHECK`; other states return `retry_requires_build_or_check_state`. `--fail-times` must be a non-negative integer and defaults to `0`; it is consumed by the fixture evaluator provider for deterministic local retry tests. `--provider` / `--adapter` select the same provider for both roles, while `--generator-provider` and `--evaluator-provider` select roles independently. The default remains `fixture` for both roles.
+The run must already be approved and have an active workspace. `run-retry` accepts current state `BUILD` or `CHECK`; other states return `retry_requires_build_or_check_state`. `--provider` / `--adapter` select the same provider for both roles, while `--generator-provider` and `--evaluator-provider` select roles independently. Defaults come from `provider`, `generator_provider`, and `evaluator_provider` in Anchor config.
 
 Each `BUILD` step runs the selected generator provider and writes `.anchor/runs/<runId>/attempts/<n>/generator-report.json`. Each `CHECK` step runs the selected evaluator provider and writes `.anchor/runs/<runId>/attempts/<n>/evaluator-report.json`. Attempt report paths are unique and do not overwrite the single-step `generator-report.json` / `evaluator-report.json` files used by `generate` and `evaluate`.
 
@@ -873,7 +873,7 @@ Event payloads include attempt numbers:
 - `CODE_PRODUCED(generator)` includes `attempt`, `report_path`, `files_changed`, and `provider`
 - `EVAL_COMPLETE(evaluator)` includes `attempt`, `verdict`, `report_path`, tests run, tests failed, feedback, and `provider`
 
-`--fail-times 0` with fixture providers evaluates PASS on the first attempt and reaches `DONE`. `--fail-times 1` fails once, returns to `BUILD`, generates a second attempt, then passes and reaches `DONE`. A fail count above the retry budget eventually reaches `HUMAN` with `retriesLeft` at `0`. Non-fixture providers are optional in retry orchestration and are expected to be validated with deterministic fake runners unless local non-interactive CLIs are available.
+Fixture providers include an internal deterministic retry test hook used by the test suite. Non-fixture providers are expected to be validated with deterministic fake runners unless local non-interactive CLIs are available.
 
 ### State Machine Core
 

@@ -12,7 +12,7 @@ async function tempDir(prefix = "anchor-mode-") {
 }
 
 async function runJson(args, paths = {}) {
-  const result = await runCli(args, paths);
+  const result = await runCli(args, { config: { provider: "fixture" }, ...paths });
   return JSON.parse(result.output);
 }
 

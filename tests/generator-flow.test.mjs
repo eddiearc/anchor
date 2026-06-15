@@ -12,12 +12,12 @@ async function tempDir(prefix = "anchor-gen-") {
 }
 
 async function runJson(args, paths) {
-  const result = await runCli(args, paths);
+  const result = await runCli(args, { config: { provider: "fixture" }, ...paths });
   return JSON.parse(result.output);
 }
 
 async function runJsonWithExit(args, paths) {
-  const result = await runCli(args, paths);
+  const result = await runCli(args, { config: { provider: "fixture" }, ...paths });
   return { exitCode: result.exitCode, json: JSON.parse(result.output) };
 }
 
@@ -57,7 +57,7 @@ test("fixture generator policy violation writes report but does not advance stat
   const worktreesDir = path.join(dir, "worktrees");
 
   const { taskId } = await planAndApproveAndWorkspace(dir, tasksDir, worktreesDir);
-  const result = await runCli(["generate", taskId, "--fixture", "outside"], { storePath, tasksDir, worktreesDir });
+  const result = await runCli(["generate", taskId, "--fixture", "outside"], { config: { provider: "fixture" }, storePath, tasksDir, worktreesDir });
 
   const gen = JSON.parse(result.output);
   assert.equal(gen.ok, false);

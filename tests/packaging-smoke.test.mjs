@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -36,8 +36,10 @@ test("npm tarball installs an anchor binary that works outside the source repo",
   const prefix = path.join(tmp, "prefix");
   const fixtureRepo = path.join(tmp, "fixture-repo");
   const fixtureHome = path.join(tmp, "home");
+  const fixtureConfig = path.join(tmp, "config.yaml");
   await mkdir(packDir, { recursive: true });
   await mkdir(fixtureHome, { recursive: true });
+  await writeFile(fixtureConfig, "provider: fixture\n");
 
   const pack = await execJson("npm", ["pack", "--json", "--pack-destination", packDir], { cwd: repoRoot });
   assert.equal(pack.length, 1);
@@ -73,7 +75,7 @@ test("npm tarball installs an anchor binary that works outside the source repo",
   assert.equal(await execText(anchorBin, ["--version"]), packageJson.version);
 
   await execFileAsync("git", ["init", fixtureRepo], { encoding: "utf8" });
-  const commandEnv = { ...process.env, HOME: fixtureHome };
+  const commandEnv = { ...process.env, HOME: fixtureHome, ANCHOR_CONFIG_PATH: fixtureConfig };
 
   const demo = await execJson(anchorBin, ["demo"], { cwd: fixtureRepo, env: commandEnv });
   assert.equal(demo.ok, true);
