@@ -24,73 +24,48 @@ Anchor takes the architecture described in Anthropic's [Harness design for long-
 
 ---
 
-## Installation Status
-
-Anchor is not published to npm yet. The unscoped `anchor` npm package name is already occupied, so this package is prepared for the scoped publish target `@eddiearc/anchor`.
-
-Current local tarball install:
+## Installation
 
 ```bash
-pnpm install
-pnpm build
-TARBALL="$(npm pack --json | node -e 'let data=""; process.stdin.on("data", c => data += c); process.stdin.on("end", () => console.log(JSON.parse(data)[0].filename));')"
-npm install -g "$TARBALL"
+# Install from GitHub (Node.js >= 20 + pnpm required)
+npm install -g github:eddiearc/anchor
+
+# Or with pnpm
+pnpm add -g github:eddiearc/anchor
 ```
 
-Local source checkout:
+Verify:
 
 ```bash
-pnpm install
-pnpm build
-pnpm anchor --help
+anchor --version
+anchor --help
 ```
 
-Future npm install after a human explicitly approves and performs the public publish:
+## Quick Start
 
 ```bash
-npm install -g @eddiearc/anchor
+# Inside any git repo
+anchor init
+
+# Create and plan a task
+anchor run "Add rate limiting to the login endpoint"
+
+# See what's next
+anchor next <taskId>
+
+# View the contract
+anchor contract <taskId>
+
+# Approve and proceed
+anchor approve <taskId>
+anchor workspace create <taskId>
+anchor generate <taskId>
+anchor next <taskId>
+anchor evaluate <taskId>
+
+# Check status
+anchor status <taskId>
 ```
-
-Before publishing, run the release checklist in [docs/release-checklist.md](https://github.com/eddiearc/anchor/blob/main/docs/release-checklist.md). The publish readiness dry run is:
-
-```bash
-pnpm publish:dry-run
-```
-
-Do not run a real `npm publish` until the package scope, version, changelog, tag, and post-install smoke are manually confirmed.
-
----
-
-## 5-minute Local CLI Quickstart
-
-Use `npm pack` from this repository for a local install smoke.
-
-```bash
-pnpm install
-pnpm build
-pnpm test
-
-TARBALL="$(npm pack --json | node -e 'let data=\"\"; process.stdin.on(\"data\", c => data += c); process.stdin.on(\"end\", () => console.log(JSON.parse(data)[0].filename));')"
-PREFIX="$(mktemp -d)"
-npm install -g --prefix "$PREFIX" "$TARBALL"
-
-"$PREFIX/bin/anchor" --help
-"$PREFIX/bin/anchor" --version
-
-FIXTURE_REPO="$(mktemp -d)"
-git -C "$FIXTURE_REPO" init
-cd "$FIXTURE_REPO"
-
-"$PREFIX/bin/anchor" init
-RUN_JSON="$("$PREFIX/bin/anchor" run "test task")"
-TASK_ID="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(0, "utf8")).taskId)' <<<"$RUN_JSON")"
-"$PREFIX/bin/anchor" next "$TASK_ID"
-"$PREFIX/bin/anchor" contract "$TASK_ID"
-"$PREFIX/bin/anchor" status "$TASK_ID"
-"$PREFIX/bin/anchor" events "$TASK_ID"
-```
-
-The installed CLI writes task and event data under the current repository's `.anchor/` directory by default. `anchor run` creates a task and contract, then stops for human approval; it does not generate code. Use `anchor next "$TASK_ID"` whenever you want the CLI to suggest the next command. This smoke does not publish to npm and does not run real Codex/Pi end-to-end flows.
 
 For agent integrations, use the JSON/exit-code protocol in [docs/agent-cli-protocol.md](docs/agent-cli-protocol.md). Provider backends are defined in [docs/provider-adapter-interface.md](docs/provider-adapter-interface.md), with runner details in [docs/codex-provider.md](docs/codex-provider.md) and [docs/pi-provider.md](docs/pi-provider.md). Anchor's canonical task identifier is `taskId`.
 
