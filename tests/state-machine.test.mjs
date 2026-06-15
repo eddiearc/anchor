@@ -7,7 +7,11 @@ import { transition } from "../dist/core/state-machine.js";
 
 const context = () => ({
   retriesLeft: 3,
-  reviewRetriesLeft: 2
+  reviewRetriesLeft: 2,
+  stepRetriesLeft: 3,
+  stepIds: [],
+  currentStepId: null,
+  completedStepIds: []
 });
 
 const taskReceived = {
@@ -20,6 +24,11 @@ const contractProduced = (mode) => ({
   mode,
   reasoning: `${mode} route`,
   affected_scope: ["src/"]
+});
+
+const steppedContractProduced = (mode, stepIds) => ({
+  ...contractProduced(mode),
+  step_ids: stepIds
 });
 
 const reviewComplete = (verdict) => ({
@@ -129,12 +138,52 @@ test("EVAL_COMPLETE PASS moves CHECK to DONE", () => {
   assert.equal(transition("CHECK", evalComplete("PASS"), context()).state, "DONE");
 });
 
+test("EVAL_COMPLETE PASS advances to next contract step before DONE", () => {
+  let result = transition("PLAN", steppedContractProduced("quick", ["1", "2"]), context());
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "BUILD");
+  assert.equal(result.context.currentStepId, "1");
+  assert.deepEqual(result.context.stepIds, ["1", "2"]);
+
+  result = transition("BUILD", codeProduced, result.context);
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "CHECK");
+
+  result = transition("CHECK", evalComplete("PASS"), result.context);
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "BUILD");
+  assert.equal(result.context.currentStepId, "2");
+  assert.deepEqual(result.context.completedStepIds, ["1"]);
+  assert.equal(result.context.stepRetriesLeft, 3);
+
+  result = transition("BUILD", codeProduced, result.context);
+  assert.equal(result.ok, true);
+  result = transition("CHECK", evalComplete("PASS"), result.context);
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "DONE");
+  assert.equal(result.context.currentStepId, null);
+  assert.deepEqual(result.context.completedStepIds, ["1", "2"]);
+});
+
 test("EVAL_COMPLETE FAIL consumes retry budget and returns to BUILD", () => {
   const result = transition("CHECK", evalComplete("FAIL"), context());
 
   assert.equal(result.ok, true);
   assert.equal(result.state, "BUILD");
   assert.equal(result.context.retriesLeft, 2);
+});
+
+test("EVAL_COMPLETE FAIL in a stepped contract retries only the current step", () => {
+  let result = transition("PLAN", steppedContractProduced("quick", ["1", "2"]), context());
+  result = transition("BUILD", codeProduced, result.context);
+  result = transition("CHECK", evalComplete("FAIL"), result.context);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "BUILD");
+  assert.equal(result.context.currentStepId, "1");
+  assert.deepEqual(result.context.completedStepIds, []);
+  assert.equal(result.context.stepRetriesLeft, 2);
+  assert.equal(result.context.retriesLeft, 3);
 });
 
 test("EVAL_COMPLETE FAIL escalates to HUMAN when retry budget is exhausted", () => {

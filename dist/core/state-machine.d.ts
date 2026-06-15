@@ -18,6 +18,7 @@ export type ContractProducedEvent = {
     reasoning: string;
     affected_scope: string[];
     contract_id?: string;
+    step_ids?: string[];
 };
 export type ReviewCompleteEvent = {
     type: "REVIEW_COMPLETE";
@@ -57,6 +58,7 @@ export type CodeProducedEvent = {
     files_changed: string[];
     attempt: number;
     provider?: string;
+    step_id?: string | null;
 };
 export type EvalCompleteEvent = {
     type: "EVAL_COMPLETE";
@@ -67,6 +69,11 @@ export type EvalCompleteEvent = {
     tests_failed?: number;
     feedback?: string;
     provider?: string;
+    criteria_results?: Array<{
+        id: string;
+        passes: boolean;
+        evidence: string[];
+    }>;
 };
 export type RunCompleteEvent = {
     type: "RUN_COMPLETE";
@@ -86,6 +93,10 @@ export type Event = TaskReceivedEvent | ContractProducedEvent | ReviewCompleteEv
 export type RunContext = {
     retriesLeft: number;
     reviewRetriesLeft: number;
+    stepRetriesLeft: number;
+    stepIds: string[];
+    currentStepId: string | null;
+    completedStepIds: string[];
 };
 export type TransitionOk = {
     ok: true;

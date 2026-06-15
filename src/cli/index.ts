@@ -18,6 +18,7 @@ import {
   listTasks,
   loadAnchorConfig,
   readContractArtifact,
+  readContractStepIds,
   readTask,
   readWorkspaceStatus,
   runGenerator,
@@ -240,8 +241,9 @@ async function runWait(args: string[], storePath: string, tasksDir: string, work
     }
 
     if (state === "BUILD") {
+      const buildStepId = snapshot?.context.currentStepId ?? null;
       const workspace = await runWorkspaceCreate(taskId, storePath, tasksDir, worktreesDir);
-      steps.push({ command: "workspace create", ok: workspace.ok, state: workspace.state ?? null, created: workspace.created });
+      steps.push({ command: "workspace create", ok: workspace.ok, state: workspace.state ?? null, created: workspace.created, stepId: buildStepId });
       if (!workspace.ok) return { command: "run-wait", ...workspace, steps };
       if (steps.length >= maxStepsResult.maxSteps) {
         const snapshotAfterWorkspace = await store.getCurrentState(taskId);
@@ -249,16 +251,17 @@ async function runWait(args: string[], storePath: string, tasksDir: string, work
       }
 
       const generated = await runGenerate([taskId], storePath, tasksDir, worktreesDir, config);
-      steps.push({ command: "generate", ok: generated.ok, state: generated.state ?? null, reportPath: generated.reportPath });
+      steps.push({ command: "generate", ok: generated.ok, state: generated.state ?? null, reportPath: generated.reportPath, stepId: buildStepId });
       if (!generated.ok) return { command: "run-wait", ...generated, steps };
       continue;
     }
 
     if (state === "CHECK") {
+      const checkStepId = snapshot?.context.currentStepId ?? null;
       const evaluatorProvider = defaultProvider(config, "evaluator");
       const evaluateArgs = evaluatorProvider === "fixture" ? [taskId, "--verdict", "pass"] : [taskId];
       const evaluated = await runEvaluate(evaluateArgs, storePath, tasksDir, worktreesDir, config);
-      steps.push({ command: "evaluate", ok: evaluated.ok, state: evaluated.state ?? null, verdict: evaluated.verdict, reportPath: evaluated.reportPath });
+      steps.push({ command: "evaluate", ok: evaluated.ok, state: evaluated.state ?? null, verdict: evaluated.verdict, reportPath: evaluated.reportPath, stepId: checkStepId });
       if (!evaluated.ok) return { command: "run-wait", ...evaluated, steps };
       continue;
     }
@@ -434,7 +437,8 @@ async function producePlanForTask(
       mode: planResult.mode,
       reasoning: planResult.reasoning,
       affected_scope: planResult.affectedScope,
-      contract_id: contract.contractId
+      contract_id: contract.contractId,
+      step_ids: readContractStepIds(contract.content)
     },
     "planner"
   );
@@ -729,7 +733,8 @@ async function runGenerate(args: string[], storePath: string, tasksDir: string, 
     fixture,
     attempt,
     config: _config,
-    allowNetwork: allowNetwork || _config?.agent_allow_network === true
+    allowNetwork: allowNetwork || _config?.agent_allow_network === true,
+    currentStepId: snapshot.context.currentStepId
   });
 
   if (!result.ok) {
@@ -738,7 +743,7 @@ async function runGenerate(args: string[], storePath: string, tasksDir: string, 
 
   const eventResult = await store.appendEvent(
     taskId,
-    { type: "CODE_PRODUCED", report_path: result.reportPath, files_changed: result.filesChanged, attempt, provider: result.report.provider },
+    { type: "CODE_PRODUCED", report_path: result.reportPath, files_changed: result.filesChanged, attempt, provider: result.report.provider, step_id: snapshot.context.currentStepId },
     "generator"
   );
   if (!eventResult.ok) {
@@ -810,7 +815,8 @@ async function runEvaluate(args: string[], storePath: string, tasksDir: string, 
     adapter,
     verdict,
     config: _config,
-    allowNetwork: allowNetwork || _config?.agent_allow_network === true
+    allowNetwork: allowNetwork || _config?.agent_allow_network === true,
+    currentStepId: snapshot.context.currentStepId
   });
   if (!result.ok) {
     return { ok: false, command: "evaluate", error: result, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };
@@ -825,7 +831,8 @@ async function runEvaluate(args: string[], storePath: string, tasksDir: string, 
       tests_run: result.report.testsRun,
       tests_failed: result.report.testsFailed,
       feedback: result.report.feedback,
-      provider: result.report.provider
+      provider: result.report.provider,
+      criteria_results: result.report.criteriaResults
     },
     "evaluator"
   );
@@ -902,6 +909,8 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
   const steps: Array<Record<string, unknown>> = [];
   let state: State = snapshot.state;
   while (state === "BUILD" || state === "CHECK") {
+    const loopSnapshot = await store.getCurrentState(taskId);
+    const loopContext = loopSnapshot?.context ?? snapshot.context;
     if (state === "BUILD") {
       const events = await store.listEvents(taskId);
       const attempt = events.filter((event) => event.event_type === "CODE_PRODUCED").length + 1;
@@ -915,7 +924,8 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
         attempt,
         reportPath: generatorAttemptReportPath(tasksDir, taskId, attempt),
         config: _config,
-        allowNetwork: allowNetwork || _config?.agent_allow_network === true
+        allowNetwork: allowNetwork || _config?.agent_allow_network === true,
+        currentStepId: loopContext.currentStepId
       });
       if (!result.ok) {
         return { ok: false, command: "run-retry", error: result, taskId, state, storePath, tasksDir, worktreesDir, steps };
@@ -923,7 +933,7 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
 
       const eventResult = await store.appendEvent(
         taskId,
-        { type: "CODE_PRODUCED", report_path: result.reportPath, files_changed: result.filesChanged, attempt, provider: result.report.provider },
+        { type: "CODE_PRODUCED", report_path: result.reportPath, files_changed: result.filesChanged, attempt, provider: result.report.provider, step_id: loopContext.currentStepId },
         "generator"
       );
       if (!eventResult.ok) {
@@ -950,7 +960,8 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
       reportPath: evaluatorAttemptReportPath(tasksDir, taskId, attempt),
       config: _config,
       allowNetwork: allowNetwork || _config?.agent_allow_network === true,
-      retryFailTimes: evaluatorProvider === "fixture" ? failTimesResult.failTimes : undefined
+      retryFailTimes: evaluatorProvider === "fixture" ? failTimesResult.failTimes : undefined,
+      currentStepId: loopContext.currentStepId
     });
     if (!result.ok) {
       return { ok: false, command: "run-retry", error: result, taskId, state, storePath, tasksDir, worktreesDir, steps };
@@ -966,7 +977,8 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
         tests_run: result.report.testsRun,
         tests_failed: result.report.testsFailed,
         feedback: result.report.feedback,
-        provider: result.report.provider
+        provider: result.report.provider,
+        criteria_results: result.report.criteriaResults
       },
       "evaluator"
     );
@@ -1402,11 +1414,14 @@ async function runWaitResult(
   config: AnchorConfig
 ) {
   const contract = await readContractArtifact(tasksDir, taskId);
+  const store = createFileRunStore(storePath);
+  const snapshot = await store.getCurrentState(taskId);
   return {
     ok: true,
     command: "run-wait",
     taskId,
     state,
+    context: snapshot?.context ?? null,
     stoppedReason,
     storePath,
     tasksDir,

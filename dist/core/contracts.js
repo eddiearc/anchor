@@ -104,6 +104,67 @@ export function serializeContract(contract) {
         ""
     ].join("\n");
 }
+export function readDefaultFailCriteria(contract) {
+    const lines = contract.split("\n");
+    const criteria = [];
+    let inCriteria = false;
+    let criteriaIndent = 0;
+    let current = null;
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed)
+            continue;
+        if (trimmed === "criteria:") {
+            inCriteria = true;
+            criteriaIndent = indentOf(line);
+            current = null;
+            continue;
+        }
+        if (inCriteria && indentOf(line) <= criteriaIndent) {
+            inCriteria = false;
+            current = null;
+        }
+        if (!inCriteria)
+            continue;
+        const idMatch = trimmed.match(/^-\s*id:\s*(.+)$/);
+        if (idMatch) {
+            current = { id: unquote(idMatch[1]), passes: true };
+            criteria.push(current);
+            continue;
+        }
+        const passesMatch = trimmed.match(/^passes:\s*(true|false)\s*$/);
+        if (passesMatch && current) {
+            current.passes = passesMatch[1] === "true";
+        }
+    }
+    return criteria.filter((criterion) => criterion.passes === false);
+}
+export function readContractStepIds(contract) {
+    const lines = contract.split("\n");
+    const stepIds = [];
+    let inSteps = false;
+    let stepsIndent = 0;
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed)
+            continue;
+        if (trimmed === "steps:") {
+            inSteps = true;
+            stepsIndent = indentOf(line);
+            continue;
+        }
+        if (inSteps && indentOf(line) <= stepsIndent) {
+            inSteps = false;
+        }
+        if (!inSteps)
+            continue;
+        const idMatch = trimmed.match(/^-\s*id:\s*(.+)$/);
+        if (idMatch && indentOf(line) === stepsIndent + 2) {
+            stepIds.push(unquote(idMatch[1]));
+        }
+    }
+    return Array.from(new Set(stepIds.filter(Boolean)));
+}
 export function sha256(content) {
     return createHash("sha256").update(content).digest("hex");
 }
@@ -113,4 +174,16 @@ function extractContractId(content) {
 }
 function quote(value) {
     return JSON.stringify(value);
+}
+function indentOf(line) {
+    return line.match(/^\s*/)?.[0].length ?? 0;
+}
+function unquote(value) {
+    const trimmed = value.trim();
+    try {
+        return JSON.parse(trimmed);
+    }
+    catch {
+        return trimmed.replace(/^['"]|['"]$/g, "");
+    }
 }

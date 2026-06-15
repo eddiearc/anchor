@@ -19,6 +19,11 @@ export type ContractArtifact = {
   non_goals: string[];
 };
 
+export type ContractCriterion = {
+  id: string;
+  passes: boolean;
+};
+
 export type ContractFile = {
   path: string;
   content: string;
@@ -135,6 +140,78 @@ export function serializeContract(contract: ContractArtifact): string {
   ].join("\n");
 }
 
+export function readDefaultFailCriteria(contract: string): ContractCriterion[] {
+  const lines = contract.split("\n");
+  const criteria: ContractCriterion[] = [];
+  let inCriteria = false;
+  let criteriaIndent = 0;
+  let current: ContractCriterion | null = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (trimmed === "criteria:") {
+      inCriteria = true;
+      criteriaIndent = indentOf(line);
+      current = null;
+      continue;
+    }
+
+    if (inCriteria && indentOf(line) <= criteriaIndent) {
+      inCriteria = false;
+      current = null;
+    }
+
+    if (!inCriteria) continue;
+
+    const idMatch = trimmed.match(/^-\s*id:\s*(.+)$/);
+    if (idMatch) {
+      current = { id: unquote(idMatch[1]), passes: true };
+      criteria.push(current);
+      continue;
+    }
+
+    const passesMatch = trimmed.match(/^passes:\s*(true|false)\s*$/);
+    if (passesMatch && current) {
+      current.passes = passesMatch[1] === "true";
+    }
+  }
+
+  return criteria.filter((criterion) => criterion.passes === false);
+}
+
+export function readContractStepIds(contract: string): string[] {
+  const lines = contract.split("\n");
+  const stepIds: string[] = [];
+  let inSteps = false;
+  let stepsIndent = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (trimmed === "steps:") {
+      inSteps = true;
+      stepsIndent = indentOf(line);
+      continue;
+    }
+
+    if (inSteps && indentOf(line) <= stepsIndent) {
+      inSteps = false;
+    }
+
+    if (!inSteps) continue;
+
+    const idMatch = trimmed.match(/^-\s*id:\s*(.+)$/);
+    if (idMatch && indentOf(line) === stepsIndent + 2) {
+      stepIds.push(unquote(idMatch[1]));
+    }
+  }
+
+  return Array.from(new Set(stepIds.filter(Boolean)));
+}
+
 export function sha256(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
@@ -146,4 +223,17 @@ function extractContractId(content: string): string | null {
 
 function quote(value: string): string {
   return JSON.stringify(value);
+}
+
+function indentOf(line: string) {
+  return line.match(/^\s*/)?.[0].length ?? 0;
+}
+
+function unquote(value: string) {
+  const trimmed = value.trim();
+  try {
+    return JSON.parse(trimmed) as string;
+  } catch {
+    return trimmed.replace(/^['"]|['"]$/g, "");
+  }
 }

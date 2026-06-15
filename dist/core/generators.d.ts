@@ -48,6 +48,7 @@ export type RunGeneratorInput = {
     reportPath?: string;
     config?: AnchorConfig;
     allowNetwork?: boolean;
+    currentStepId?: string | null;
 };
 export declare function runGenerator(input: RunGeneratorInput, runner?: CommandRunner): Promise<GeneratorOk | GeneratorError>;
 export declare function validateGeneratorProvider(providerId: string, runner?: CommandRunner): {

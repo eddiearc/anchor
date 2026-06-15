@@ -172,10 +172,13 @@ test("anchor run-wait drives quick mode to DONE without human intervention", asy
   assert.equal(result.ok, true);
   assert.equal(result.state, "DONE");
   assert.equal(result.stoppedReason, "terminal_state");
+  assert.deepEqual(result.context.completedStepIds, ["1"]);
   assert.deepEqual(
     result.steps.map((step) => step.command),
     ["run", "workspace create", "generate", "evaluate"]
   );
+  assert.equal(result.steps.find((step) => step.command === "generate").stepId, "1");
+  assert.equal(result.steps.find((step) => step.command === "evaluate").stepId, "1");
   assert.deepEqual(result.nextCommands, []);
 });
 
@@ -201,6 +204,7 @@ test("anchor run-wait stops at the agent loop limit", async () => {
   assert.equal(result.ok, true);
   assert.equal(result.state, "BUILD");
   assert.equal(result.stoppedReason, "agent_loop_limit");
+  assert.equal(result.context.currentStepId, "1");
   assert.deepEqual(
     result.steps.map((step) => step.command),
     ["run", "workspace create"]

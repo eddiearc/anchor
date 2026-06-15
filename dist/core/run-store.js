@@ -5,7 +5,11 @@ import { validateEventSource } from "./permissions.js";
 import { transition } from "./state-machine.js";
 export const defaultContext = {
     retriesLeft: 3,
-    reviewRetriesLeft: 2
+    reviewRetriesLeft: 2,
+    stepRetriesLeft: 3,
+    stepIds: [],
+    currentStepId: null,
+    completedStepIds: []
 };
 export function createFileRunStore(filePath) {
     const absolutePath = path.resolve(filePath);

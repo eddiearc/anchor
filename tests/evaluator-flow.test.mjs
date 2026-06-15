@@ -43,6 +43,7 @@ test("fixture evaluator PASS writes report, appends event, and advances CHECK to
   assert.equal(evalResult.verdict, "PASS");
   assert.equal(evalResult.event.event_type, "EVAL_COMPLETE");
   assert.equal(evalResult.event.emitted_by, "evaluator");
+  assert.equal(evalResult.event.payload.criteria_results.length, 2);
 
   const events = await runJson(["events", taskId], { storePath });
   assert.equal(events.events[events.events.length - 1].state_after, "DONE");
@@ -66,7 +67,9 @@ test("fixture evaluator FAIL returns CHECK to BUILD and consumes retry budget", 
 
   const snapshot = await ((await import("../dist/index.js")).createFileRunStore(storePath)).getCurrentState(taskId);
   assert.equal(snapshot.state, "BUILD");
-  assert.equal(snapshot.context.retriesLeft, 2);
+  assert.equal(snapshot.context.currentStepId, "1");
+  assert.equal(snapshot.context.stepRetriesLeft, 2);
+  assert.equal(snapshot.context.retriesLeft, 3);
 });
 
 test("fixture evaluator rejects invalid verdicts without report, event, or state changes", async () => {
@@ -129,8 +132,9 @@ test("codex evaluator runs fake script, reads verdict.json, and advances CHECK t
     "for arg in \"$@\"; do last=\"$arg\"; done",
     "case \"$last\" in *\"Approved contract path:\"*\"Generator report path:\"*\"Generator report:\"*\"The Generator changed these files:\"*) ;; *) echo missing-prompt-boundary >&2; exit 3 ;; esac",
     "if [ -n \"$ANCHOR_CODEX_COMMAND\" ] || [ -n \"$ANCHOR_CODEX_ARGV_JSON\" ] || [ -n \"$SECRET_TOKEN\" ]; then echo leaked-env >&2; exit 4; fi",
-    "mkdir -p \"$PWD/.anchor/eval\" 2>/dev/null || true",
-    `echo '{"verdict":"PASS","feedback":"All tests pass. Implementation matches contract.","testsRun":3,"testsFailed":0}' > "$PWD/.anchor/eval/verdict.json"`
+    "mkdir -p \"$PWD/.anchor/eval/tests\" 2>/dev/null || true",
+    "echo evidence > \"$PWD/.anchor/eval/tests/codex-evidence.txt\"",
+    `echo '{"verdict":"PASS","feedback":"All tests pass. Implementation matches contract.","testsRun":3,"testsFailed":0,"criteriaResults":[{"id":"1.1","passes":true,"evidence":[".anchor/eval/tests/codex-evidence.txt"]},{"id":"1.2","passes":true,"evidence":[".anchor/eval/tests/codex-evidence.txt"]}]}' > "$PWD/.anchor/eval/verdict.json"`
   ].join("\n"));
   await chmod(fakeCodex, 0o755);
 
@@ -148,6 +152,7 @@ test("codex evaluator runs fake script, reads verdict.json, and advances CHECK t
     assert.equal(evalResult.event.event_type, "EVAL_COMPLETE");
     assert.equal(evalResult.event.emitted_by, "evaluator");
     assert.equal(evalResult.event.payload.provider, "codex");
+    assert.equal(evalResult.event.payload.criteria_results.length, 2);
 
     const report = JSON.parse(await readFile(evalResult.reportPath, "utf8"));
     assert.equal(report.adapter, "codex");
@@ -156,6 +161,7 @@ test("codex evaluator runs fake script, reads verdict.json, and advances CHECK t
     assert.equal(report.generatorReportPath.endsWith("generator-report.json"), true);
     assert.equal(report.argv.at(-1), "[prompt redacted]");
     assert.equal(report.exitCode, 0);
+    assert.equal(report.criteriaResults.length, 2);
 
     const events = await runJson(["events", taskId], { storePath });
     assert.equal(events.events[events.events.length - 1].state_after, "DONE");
@@ -163,6 +169,39 @@ test("codex evaluator runs fake script, reads verdict.json, and advances CHECK t
     delete process.env.ANCHOR_CODEX_COMMAND;
     delete process.env.ANCHOR_CODEX_ARGV_JSON;
     delete process.env.SECRET_TOKEN;
+  }
+});
+
+test("codex evaluator rejects PASS without criterion evidence for default-fail contracts", async () => {
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
+
+  const { taskId, storePath } = await planApproveGenerate(dir, tasksDir, worktreesDir);
+
+  const fakeCodex = path.join(dir, "fake-codex-no-evidence.sh");
+  await writeFile(fakeCodex, [
+    "#!/bin/sh",
+    "mkdir -p \"$PWD/.anchor/eval\" 2>/dev/null || true",
+    `echo '{"verdict":"PASS","feedback":"Looks good.","testsRun":1,"testsFailed":0}' > "$PWD/.anchor/eval/verdict.json"`
+  ].join("\n"));
+  await chmod(fakeCodex, 0o755);
+
+  process.env.ANCHOR_CODEX_COMMAND = fakeCodex;
+  process.env.ANCHOR_CODEX_ARGV_JSON = JSON.stringify(["fake-exec", "--cd", "__worktree__"]);
+  try {
+    const evalResult = await runJsonWithExit(["evaluate", taskId, "--provider", "codex"], { storePath, tasksDir, worktreesDir });
+
+    assert.notEqual(evalResult.exitCode, 0);
+    assert.equal(evalResult.json.ok, false);
+    assert.equal(evalResult.json.error.code, "EVIDENCE_REQUIRED");
+
+    const store = createFileRunStore(storePath);
+    const snapshot = await store.getCurrentState(taskId);
+    assert.equal(snapshot.state, "CHECK");
+  } finally {
+    delete process.env.ANCHOR_CODEX_COMMAND;
+    delete process.env.ANCHOR_CODEX_ARGV_JSON;
   }
 });
 
@@ -283,8 +322,9 @@ test("pi evaluator runs fake script, reads verdict.json, and advances CHECK to D
     "for arg in \"$@\"; do last=\"$arg\"; done",
     "case \"$last\" in *\"Approved contract path:\"*\"Generator report path:\"*\"Generator report:\"*\"The Generator changed these files:\"*) ;; *) echo missing-prompt-boundary >&2; exit 3 ;; esac",
     "if [ -n \"$ANCHOR_PI_COMMAND\" ] || [ -n \"$ANCHOR_PI_ARGV_JSON\" ] || [ -n \"$SECRET_TOKEN\" ]; then echo leaked-env >&2; exit 4; fi",
-    "mkdir -p \"$PWD/.anchor/eval\" 2>/dev/null || true",
-    `echo '{"verdict":"PASS","feedback":"Pi accepted the work.","testsRun":4,"testsFailed":0}' > "$PWD/.anchor/eval/verdict.json"`
+    "mkdir -p \"$PWD/.anchor/eval/tests\" 2>/dev/null || true",
+    "echo evidence > \"$PWD/.anchor/eval/tests/pi-evidence.txt\"",
+    `echo '{"verdict":"PASS","feedback":"Pi accepted the work.","testsRun":4,"testsFailed":0,"criteriaResults":[{"id":"1.1","passes":true,"evidence":[".anchor/eval/tests/pi-evidence.txt"]},{"id":"1.2","passes":true,"evidence":[".anchor/eval/tests/pi-evidence.txt"]}]}' > "$PWD/.anchor/eval/verdict.json"`
   ].join("\n"));
   await chmod(fakePi, 0o755);
 

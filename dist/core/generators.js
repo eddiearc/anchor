@@ -240,6 +240,7 @@ function buildGeneratorPrompt(input) {
     const base = [
         "You are the Generator role inside Anchor.",
         `Task ID: ${input.taskId}`,
+        `Current step ID: ${input.currentStepId ?? "(contract-level)"}`,
         `Worktree path: ${input.workspace.worktreePath}`,
         `Approved contract path: ${input.contractPath ?? contractPathForTask(input.artifactsDir, input.taskId)}`,
         "",

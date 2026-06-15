@@ -87,6 +87,7 @@ export type RunGeneratorInput = {
   reportPath?: string;
   config?: AnchorConfig;
   allowNetwork?: boolean;
+  currentStepId?: string | null;
 };
 
 export async function runGenerator(
@@ -366,6 +367,7 @@ function buildGeneratorPrompt(input: RunGeneratorInput): string {
   const base = [
     "You are the Generator role inside Anchor.",
     `Task ID: ${input.taskId}`,
+    `Current step ID: ${input.currentStepId ?? "(contract-level)"}`,
     `Worktree path: ${input.workspace.worktreePath}`,
     `Approved contract path: ${input.contractPath ?? contractPathForTask(input.artifactsDir, input.taskId)}`,
     "",

@@ -42,6 +42,9 @@ test("plan creates deterministic contract artifact and waits in HUMAN", async ()
   assert.match(content, /denylist:/m);
   assert.match(content, /steps:/m);
   assert.match(content, /acceptance:/m);
+  assert.match(content, /criteria:/m);
+  assert.match(content, /passes: false/m);
+  assert.match(content, /evidence_required:/m);
   assert.match(content, /completion_gate:/m);
   assert.match(content, /constraints:/m);
 

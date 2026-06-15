@@ -183,7 +183,9 @@ test("run-retry can use fake pi evaluator provider to drive FAIL then PASS trans
     "if [ \"$count\" -eq 1 ]; then",
     "  printf '%s\\n' '{\"verdict\":\"FAIL\",\"feedback\":\"fake pi requested retry\",\"testsRun\":2,\"testsFailed\":1}' > \"$PWD/.anchor/eval/verdict.json\"",
     "else",
-    "  printf '%s\\n' '{\"verdict\":\"PASS\",\"feedback\":\"fake pi accepted retry\",\"testsRun\":3,\"testsFailed\":0}' > \"$PWD/.anchor/eval/verdict.json\"",
+    "  mkdir -p \"$PWD/.anchor/eval/tests\"",
+    "  echo evidence > \"$PWD/.anchor/eval/tests/pi-retry-evidence.txt\"",
+    "  printf '%s\\n' '{\"verdict\":\"PASS\",\"feedback\":\"fake pi accepted retry\",\"testsRun\":3,\"testsFailed\":0,\"criteriaResults\":[{\"id\":\"1.1\",\"passes\":true,\"evidence\":[\".anchor/eval/tests/pi-retry-evidence.txt\"]},{\"id\":\"1.2\",\"passes\":true,\"evidence\":[\".anchor/eval/tests/pi-retry-evidence.txt\"]}]}' > \"$PWD/.anchor/eval/verdict.json\"",
     "fi"
   ].join("\n"));
   await chmod(fakePi, 0o755);

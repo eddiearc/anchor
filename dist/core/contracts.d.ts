@@ -14,6 +14,10 @@ export type ContractArtifact = {
     commands: string[];
     non_goals: string[];
 };
+export type ContractCriterion = {
+    id: string;
+    passes: boolean;
+};
 export type ContractFile = {
     path: string;
     content: string;
@@ -27,4 +31,6 @@ export declare function readContractArtifact(artifactsDir: string, taskId: strin
 export declare function contractPathForTask(artifactsDir: string, taskId: string): string;
 export declare function contractIdForTask(taskId: string): string;
 export declare function serializeContract(contract: ContractArtifact): string;
+export declare function readDefaultFailCriteria(contract: string): ContractCriterion[];
+export declare function readContractStepIds(contract: string): string[];
 export declare function sha256(content: string): string;

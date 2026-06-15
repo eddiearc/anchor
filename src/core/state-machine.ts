@@ -21,6 +21,7 @@ export type ContractProducedEvent = {
   reasoning: string;
   affected_scope: string[];
   contract_id?: string;
+  step_ids?: string[];
 };
 
 export type ReviewCompleteEvent = {
@@ -68,6 +69,7 @@ export type CodeProducedEvent = {
   files_changed: string[];
   attempt: number;
   provider?: string;
+  step_id?: string | null;
 };
 
 export type EvalCompleteEvent = {
@@ -79,6 +81,11 @@ export type EvalCompleteEvent = {
   tests_failed?: number;
   feedback?: string;
   provider?: string;
+  criteria_results?: Array<{
+    id: string;
+    passes: boolean;
+    evidence: string[];
+  }>;
 };
 
 export type RunCompleteEvent = {
@@ -117,6 +124,10 @@ export type Event =
 export type RunContext = {
   retriesLeft: number;
   reviewRetriesLeft: number;
+  stepRetriesLeft: number;
+  stepIds: string[];
+  currentStepId: string | null;
+  completedStepIds: string[];
 };
 
 export type TransitionOk = {
@@ -145,46 +156,48 @@ export type TransitionError = {
 export type TransitionResult = TransitionOk | TransitionError;
 
 export function transition(state: State | InitialState, event: Event, context: RunContext): TransitionResult {
+  const normalizedContext = normalizeContext(context);
+
   if (event.type === "HUMAN_ABORT" && isActiveState(state)) {
-    return ok("ABORT", context);
+    return ok("ABORT", normalizedContext);
   }
 
   if (state === null) {
     if (event.type === "TASK_RECEIVED") {
-      return ok("PLAN", context);
+      return ok("PLAN", normalizedContext);
     }
-    return error("INVALID_INITIAL_EVENT", "Initial state only accepts TASK_RECEIVED.", state, event, context);
+    return error("INVALID_INITIAL_EVENT", "Initial state only accepts TASK_RECEIVED.", state, event, normalizedContext);
   }
 
   if (isTerminalState(state)) {
-    return error("INVALID_TERMINAL_TRANSITION", `Terminal state ${state} does not accept events.`, state, event, context);
+    return error("INVALID_TERMINAL_TRANSITION", `Terminal state ${state} does not accept events.`, state, event, normalizedContext);
   }
 
   if (isWorkspaceAuditEvent(event) && isActiveState(state)) {
-    return ok(state, context);
+    return ok(state, normalizedContext);
   }
 
   if (isInfoEvent(event) && isActiveState(state)) {
-    return ok(state, context);
+    return ok(state, normalizedContext);
   }
 
   switch (state) {
     case "PLAN":
-      return transitionFromPlan(event, context, state);
+      return transitionFromPlan(event, normalizedContext, state);
     case "REVIEW":
-      return transitionFromReview(event, context, state);
+      return transitionFromReview(event, normalizedContext, state);
     case "HUMAN":
-      return transitionFromHuman(event, context, state);
+      return transitionFromHuman(event, normalizedContext, state);
     case "BUILD":
       if (event.type === "CODE_PRODUCED") {
-        return ok("CHECK", context);
+        return ok("CHECK", normalizedContext);
       }
       break;
     case "CHECK":
-      return transitionFromCheck(event, context, state);
+      return transitionFromCheck(event, normalizedContext, state);
   }
 
-  return error("INVALID_STATE_EVENT", `${state} does not accept ${event.type}.`, state, event, context);
+  return error("INVALID_STATE_EVENT", `${state} does not accept ${event.type}.`, state, event, normalizedContext);
 }
 
 function transitionFromPlan(event: Event, context: RunContext, state: State): TransitionResult {
@@ -196,13 +209,14 @@ function transitionFromPlan(event: Event, context: RunContext, state: State): Tr
     return error("INVALID_MODE", `Invalid mode: ${String(event.mode)}.`, state, event, context);
   }
 
+  const stepContext = initializeStepContext(context, event.step_ids);
   if (event.mode === "quick") {
-    return ok("BUILD", context);
+    return ok("BUILD", stepContext);
   }
   if (event.mode === "standard") {
-    return ok("HUMAN", context);
+    return ok("HUMAN", stepContext);
   }
-  return ok("REVIEW", context);
+  return ok("REVIEW", stepContext);
 }
 
 function transitionFromReview(event: Event, context: RunContext, state: State): TransitionResult {
@@ -251,7 +265,18 @@ function transitionFromCheck(event: Event, context: RunContext, state: State): T
   }
 
   if (event.verdict === "PASS") {
-    return ok("DONE", context);
+    return passCurrentStep(context);
+  }
+
+  if (context.currentStepId !== null && context.stepIds.length > 0) {
+    if (context.stepRetriesLeft > 0) {
+      return ok("BUILD", {
+        ...context,
+        stepRetriesLeft: context.stepRetriesLeft - 1
+      });
+    }
+
+    return ok("HUMAN", context);
   }
 
   if (context.retriesLeft > 0) {
@@ -264,8 +289,57 @@ function transitionFromCheck(event: Event, context: RunContext, state: State): T
   return ok("HUMAN", context);
 }
 
+function initializeStepContext(context: RunContext, stepIds: string[] | undefined): RunContext {
+  const cleanedStepIds = Array.from(new Set((stepIds ?? []).map((id) => id.trim()).filter(Boolean)));
+  return {
+    ...context,
+    stepIds: cleanedStepIds,
+    currentStepId: cleanedStepIds[0] ?? null,
+    completedStepIds: [],
+    stepRetriesLeft: 3
+  };
+}
+
+function passCurrentStep(context: RunContext): TransitionResult {
+  if (context.currentStepId === null || context.stepIds.length === 0) {
+    return ok("DONE", context);
+  }
+
+  const completedStepIds = context.completedStepIds.includes(context.currentStepId)
+    ? context.completedStepIds
+    : [...context.completedStepIds, context.currentStepId];
+  const nextStepId = context.stepIds.find((stepId) => !completedStepIds.includes(stepId)) ?? null;
+
+  if (nextStepId) {
+    return ok("BUILD", {
+      ...context,
+      currentStepId: nextStepId,
+      completedStepIds,
+      stepRetriesLeft: 3
+    });
+  }
+
+  return ok("DONE", {
+    ...context,
+    currentStepId: null,
+    completedStepIds,
+    stepRetriesLeft: 3
+  });
+}
+
 function ok(state: State, context: RunContext): TransitionOk {
   return { ok: true, state, context };
+}
+
+function normalizeContext(context: RunContext): RunContext {
+  return {
+    retriesLeft: context.retriesLeft,
+    reviewRetriesLeft: context.reviewRetriesLeft,
+    stepRetriesLeft: typeof context.stepRetriesLeft === "number" ? context.stepRetriesLeft : 3,
+    stepIds: Array.isArray(context.stepIds) ? context.stepIds : [],
+    currentStepId: typeof context.currentStepId === "string" ? context.currentStepId : null,
+    completedStepIds: Array.isArray(context.completedStepIds) ? context.completedStepIds : []
+  };
 }
 
 function error(

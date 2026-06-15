@@ -16,6 +16,7 @@ export type EvaluatorReport = {
     feedback: string;
     filesInspected: string[];
     generatorReportPath: string;
+    criteriaResults?: CriterionResult[];
     summary: string;
     command?: string;
     argv?: string[];
@@ -30,11 +31,16 @@ export type EvaluatorOk = {
 };
 export type EvaluatorError = {
     ok: false;
-    code: "UNSUPPORTED_ADAPTER" | "UNKNOWN_PROVIDER" | "UNSUPPORTED_PROVIDER_ROLE" | "INVALID_VERDICT" | "WORKSPACE_UNAVAILABLE" | "GENERATOR_REPORT_NOT_FOUND" | "CODEX_CLI_UNAVAILABLE" | "CODEX_COMMAND_FAILED" | "CODEX_NO_VERDICT" | "PI_CLI_UNAVAILABLE" | "PI_COMMAND_FAILED" | "PI_NO_VERDICT";
+    code: "UNSUPPORTED_ADAPTER" | "UNKNOWN_PROVIDER" | "UNSUPPORTED_PROVIDER_ROLE" | "INVALID_VERDICT" | "WORKSPACE_UNAVAILABLE" | "GENERATOR_REPORT_NOT_FOUND" | "EVIDENCE_REQUIRED" | "CODEX_CLI_UNAVAILABLE" | "CODEX_COMMAND_FAILED" | "CODEX_NO_VERDICT" | "PI_CLI_UNAVAILABLE" | "PI_COMMAND_FAILED" | "PI_NO_VERDICT";
     message: string;
     detail?: string;
     report?: EvaluatorReport;
     reportPath?: string;
+};
+export type CriterionResult = {
+    id: string;
+    passes: boolean;
+    evidence: string[];
 };
 export type RunEvaluatorInput = {
     taskId: string;
@@ -50,6 +56,7 @@ export type RunEvaluatorInput = {
     config?: AnchorConfig;
     allowNetwork?: boolean;
     retryFailTimes?: number;
+    currentStepId?: string | null;
 };
 export declare function runEvaluator(input: RunEvaluatorInput, runner?: CommandRunner): Promise<EvaluatorOk | EvaluatorError>;
 export declare function validateEvaluatorProvider(providerId: string, runner?: CommandRunner): {

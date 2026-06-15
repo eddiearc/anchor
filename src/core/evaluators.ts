@@ -1,11 +1,11 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getWorkspaceGitStatus, type WorkspaceMetadata } from "./workspaces.js";
 import { generatorReportPath } from "./generators.js";
 import { resolveProvider, type ProviderDefinition, type ProviderError } from "./providers.js";
 import { type EvalVerdict } from "./state-machine.js";
 import { composePrompt, type AnchorConfig } from "./config.js";
-import { contractPathForTask } from "./contracts.js";
+import { contractPathForTask, readDefaultFailCriteria } from "./contracts.js";
 import {
   type CommandRunner,
   type CommandResult,
@@ -37,6 +37,7 @@ export type EvaluatorReport = {
   feedback: string;
   filesInspected: string[];
   generatorReportPath: string;
+  criteriaResults?: CriterionResult[];
   summary: string;
   command?: string;
   argv?: string[];
@@ -60,6 +61,7 @@ export type EvaluatorError = {
     | "INVALID_VERDICT"
     | "WORKSPACE_UNAVAILABLE"
     | "GENERATOR_REPORT_NOT_FOUND"
+    | "EVIDENCE_REQUIRED"
     | "CODEX_CLI_UNAVAILABLE"
     | "CODEX_COMMAND_FAILED"
     | "CODEX_NO_VERDICT"
@@ -70,6 +72,12 @@ export type EvaluatorError = {
   detail?: string;
   report?: EvaluatorReport;
   reportPath?: string;
+};
+
+export type CriterionResult = {
+  id: string;
+  passes: boolean;
+  evidence: string[];
 };
 
 export type RunEvaluatorInput = {
@@ -86,6 +94,7 @@ export type RunEvaluatorInput = {
   config?: AnchorConfig;
   allowNetwork?: boolean;
   retryFailTimes?: number;
+  currentStepId?: string | null;
 };
 
 export async function runEvaluator(
@@ -171,6 +180,10 @@ export async function runFixtureEvaluator(
   }
 
   const startedAt = new Date().toISOString();
+  const criteriaResults =
+    requestedVerdict.verdict === "PASS"
+      ? await writeFixtureEvidence(input)
+      : readDefaultFailCriteria(input.contract).map((criterion) => ({ id: criterion.id, passes: false, evidence: [] }));
   const filesInspected = status.changedFiles;
   const testsRun = 1;
   const testsFailed = requestedVerdict.verdict === "PASS" ? 0 : 1;
@@ -191,6 +204,7 @@ export async function runFixtureEvaluator(
         : "Fixture evaluator rejected the generated worktree changes.",
     filesInspected,
     generatorReportPath: generatorReport,
+    criteriaResults,
     summary: `Fixture evaluator returned ${requestedVerdict.verdict} after inspecting ${filesInspected.length} file(s).`
   };
   const reportPath = await writeEvaluatorReport(input.artifactsDir, input.taskId, report, input.reportPath);
@@ -320,6 +334,10 @@ async function runCommandEvaluator(
 
   const finishedAt = new Date().toISOString();
   const filesInspected = (await getWorkspaceGitStatus(input.workspace.worktreePath)).changedFiles;
+  const evidenceCheck = verdictResult.ok
+    ? await validateEvidenceGate(input.contract, input.workspace.worktreePath, verdictResult)
+    : { ok: true as const };
+
   const report: EvaluatorReport = {
     adapter: providerConfig.provider,
     provider: providerConfig.provider,
@@ -333,6 +351,7 @@ async function runCommandEvaluator(
     feedback: verdictResult.ok ? verdictResult.feedback : verdictResult.message,
     filesInspected,
     generatorReportPath: generatorReportPathStr,
+    criteriaResults: verdictResult.ok ? verdictResult.criteriaResults : undefined,
     command,
     argv: redactCodexArgv(argv),
     exitCode: result.exitCode,
@@ -355,6 +374,17 @@ async function runCommandEvaluator(
     };
   }
 
+  if (!evidenceCheck.ok) {
+    return {
+      ok: false,
+      code: "EVIDENCE_REQUIRED",
+      message: evidenceCheck.message,
+      detail: evidenceCheck.detail,
+      report,
+      reportPath
+    };
+  }
+
   return {
     ok: true,
     report,
@@ -371,6 +401,7 @@ function buildEvaluatorPrompt(
   const base = [
     "You are the Evaluator role inside Anchor.",
     `Task ID: ${input.taskId}`,
+    `Current step ID: ${input.currentStepId ?? "(contract-level)"}`,
     `Worktree path: ${input.workspace.worktreePath}`,
     `Approved contract path: ${input.contractPath ?? contractPathForTask(input.artifactsDir, input.taskId)}`,
     `Generator report path: ${generatorReportPathStr}`,
@@ -389,8 +420,9 @@ function buildEvaluatorPrompt(
     "2. Write verification tests to `.anchor/eval/tests/`.",
     "3. Run the tests and observe results.",
     "4. Write your evaluation verdict to `.anchor/eval/verdict.json` with this exact format:",
-    '   {"verdict":"PASS","feedback":"<detailed explanation>","testsRun":<number>,"testsFailed":<number>}',
+    '   {"verdict":"PASS","feedback":"<detailed explanation>","testsRun":<number>,"testsFailed":<number>,"criteriaResults":[{"id":"<criterion id>","passes":true,"evidence":[".anchor/eval/tests/<evidence-file>"]}]}',
     "   Use \"FAIL\" if the implementation is incorrect, incomplete, or violates the contract.",
+    "   For PASS on default-fail criteria, include one criteriaResults entry per criterion and at least one existing evidence file per criterion.",
     "5. Exit with code 0 for PASS, code 1 for FAIL.",
     "",
     "Constraints:",
@@ -410,6 +442,7 @@ type ProviderVerdictResult =
       feedback: string;
       testsRun: number;
       testsFailed: number;
+      criteriaResults?: CriterionResult[];
     }
   | {
       ok: false;
@@ -437,7 +470,8 @@ async function readProviderVerdict(
           verdict: parsed.verdict as EvalVerdict,
           feedback: parsed.feedback,
           testsRun: typeof parsed.testsRun === "number" ? parsed.testsRun : 0,
-          testsFailed: typeof parsed.testsFailed === "number" ? parsed.testsFailed : 0
+          testsFailed: typeof parsed.testsFailed === "number" ? parsed.testsFailed : 0,
+          criteriaResults: readCriterionResults(parsed.criteriaResults)
         };
       }
       return {
@@ -471,6 +505,108 @@ async function readProviderVerdict(
     message: `${providerConfig.label} evaluator completed without writing a valid verdict file: ${verdictPath}`,
     detail: summarizeOutput(result.stdout || result.stderr)
   };
+}
+
+async function writeFixtureEvidence(input: RunEvaluatorInput): Promise<CriterionResult[]> {
+  const criteria = readDefaultFailCriteria(input.contract);
+  if (criteria.length === 0) return [];
+
+  const evidencePath = path.join(input.workspace.worktreePath, ".anchor", "eval", "tests", "fixture-evidence.txt");
+  await mkdir(path.dirname(evidencePath), { recursive: true });
+  await writeFile(evidencePath, [
+    `taskId=${input.taskId}`,
+    "provider=fixture",
+    "verdict=PASS",
+    "evidence=fixture evaluator accepted generated worktree changes",
+    ""
+  ].join("\n"));
+
+  return criteria.map((criterion) => ({
+    id: criterion.id,
+    passes: true,
+    evidence: [".anchor/eval/tests/fixture-evidence.txt"]
+  }));
+}
+
+function readCriterionResults(value: unknown): CriterionResult[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const results: CriterionResult[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") return undefined;
+    const candidate = item as Record<string, unknown>;
+    if (typeof candidate.id !== "string" || typeof candidate.passes !== "boolean" || !Array.isArray(candidate.evidence)) {
+      return undefined;
+    }
+    const evidence = candidate.evidence.filter((entry): entry is string => typeof entry === "string");
+    if (evidence.length !== candidate.evidence.length) return undefined;
+    results.push({ id: candidate.id, passes: candidate.passes, evidence });
+  }
+  return results;
+}
+
+async function validateEvidenceGate(
+  contract: string,
+  worktreePath: string,
+  verdict: Extract<ProviderVerdictResult, { ok: true }>
+): Promise<{ ok: true } | { ok: false; message: string; detail: string }> {
+  if (verdict.verdict !== "PASS") return { ok: true };
+
+  const requiredCriteria = readDefaultFailCriteria(contract);
+  if (requiredCriteria.length === 0) return { ok: true };
+
+  const results = verdict.criteriaResults ?? [];
+  const resultById = new Map(results.map((result) => [result.id, result]));
+  for (const criterion of requiredCriteria) {
+    const result = resultById.get(criterion.id);
+    if (!result || result.passes !== true) {
+      return {
+        ok: false,
+        message: `PASS verdict missing passing evidence result for criterion: ${criterion.id}`,
+        detail: JSON.stringify({ criterionId: criterion.id })
+      };
+    }
+    if (result.evidence.length === 0) {
+      return {
+        ok: false,
+        message: `PASS verdict criterion has no evidence files: ${criterion.id}`,
+        detail: JSON.stringify({ criterionId: criterion.id })
+      };
+    }
+    for (const evidencePath of result.evidence) {
+      const evidenceCheck = await evidenceFileExists(worktreePath, evidencePath);
+      if (!evidenceCheck.ok) {
+        return {
+          ok: false,
+          message: `PASS verdict references missing or invalid evidence for criterion ${criterion.id}: ${evidencePath}`,
+          detail: evidenceCheck.detail
+        };
+      }
+    }
+  }
+
+  return { ok: true };
+}
+
+async function evidenceFileExists(worktreePath: string, evidencePath: string): Promise<{ ok: true } | { ok: false; detail: string }> {
+  if (path.isAbsolute(evidencePath) || evidencePath.split(/[\\/]+/).includes("..")) {
+    return { ok: false, detail: JSON.stringify({ evidencePath, reason: "evidence_path_must_stay_inside_worktree" }) };
+  }
+
+  const absolute = path.resolve(worktreePath, evidencePath);
+  const root = path.resolve(worktreePath);
+  if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) {
+    return { ok: false, detail: JSON.stringify({ evidencePath, reason: "evidence_path_outside_worktree" }) };
+  }
+
+  try {
+    const file = await stat(absolute);
+    return file.isFile() ? { ok: true } : { ok: false, detail: JSON.stringify({ evidencePath, reason: "not_a_file" }) };
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return { ok: false, detail: JSON.stringify({ evidencePath, reason: "missing" }) };
+    }
+    throw error;
+  }
 }
 
 function providerTimeoutMs(providerEnvPrefix: "CODEX" | "PI") {

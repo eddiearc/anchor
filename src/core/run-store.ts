@@ -51,7 +51,11 @@ export type TaskSnapshot = {
 
 export const defaultContext: RunContext = {
   retriesLeft: 3,
-  reviewRetriesLeft: 2
+  reviewRetriesLeft: 2,
+  stepRetriesLeft: 3,
+  stepIds: [],
+  currentStepId: null,
+  completedStepIds: []
 };
 
 export type RunStore = {
