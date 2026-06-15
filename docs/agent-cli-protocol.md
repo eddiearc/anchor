@@ -34,7 +34,12 @@ Failure outputs include:
 
 ## `nextActions`
 
-`anchor run` and `anchor next <taskId>` return `nextActions`. Each action contains:
+`anchor run-wait` is the preferred automation entrypoint. It advances
+agent-owned states until it reaches `HUMAN`, `DONE`, `ABORT`, an error, or
+`--max-steps`.
+
+`anchor run` and `anchor next <taskId>` remain available for step-by-step
+control and return `nextActions`. Each action contains:
 
 - `action`: stable machine action id, such as `view_contract`, `approve_contract`, `create_workspace`, `generate`, `evaluate`, or `done`
 - `command`: argv array that can be executed directly, for example `["anchor", "contract", "TASK-001"]`
@@ -44,16 +49,11 @@ Failure outputs include:
 ## Sequence
 
 ```bash
-RUN_JSON="$(anchor run "test task")"
+RUN_JSON="$(anchor run-wait "test task")"
 TASK_ID="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(0, "utf8")).taskId)' <<<"$RUN_JSON")"
-anchor next "$TASK_ID"
 anchor contract "$TASK_ID"
 anchor approve "$TASK_ID"
-anchor next "$TASK_ID"
-anchor workspace create "$TASK_ID"
-anchor generate "$TASK_ID" --adapter fixture
-anchor next "$TASK_ID"
-anchor evaluate "$TASK_ID" --adapter fixture --verdict pass
+anchor run-wait "$TASK_ID"
 anchor status "$TASK_ID"
 anchor events "$TASK_ID"
 ```

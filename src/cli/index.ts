@@ -78,6 +78,10 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
     return json(await runRun(rest, storePath, tasksDir, config, git));
   }
 
+  if (command === "run-wait") {
+    return json(await runWait(rest, storePath, tasksDir, worktreesDir, config, git));
+  }
+
   if (command === "next") {
     return json(await runNext(rest[0], storePath, tasksDir, worktreesDir, config));
   }
@@ -151,7 +155,7 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
 // ── run ──
 
 async function runRun(args: string[], storePath: string, tasksDir: string, config: AnchorConfig, git: GitRootResult) {
-  const result = await runPlan(args, storePath, tasksDir, config, git);
+  const result: any = await runPlan(args, storePath, tasksDir, config, git);
   if (!result.ok) {
     return { command: "run", ...result };
   }
@@ -169,6 +173,108 @@ async function runRun(args: string[], storePath: string, tasksDir: string, confi
     nextActions: nextActionsForState(taskId, result.state, Boolean(result.contractPath), config),
     nextCommands: nextCommandsForState(taskId, result.state, Boolean(result.contractPath), config)
   };
+}
+
+// ── run-wait ──
+
+async function runWait(args: string[], storePath: string, tasksDir: string, worktreesDir: string, config: AnchorConfig, git: GitRootResult) {
+  const maxStepsResult = readMaxSteps(args);
+  if (!maxStepsResult.ok) {
+    return { ok: false, command: "run-wait", error: maxStepsResult, storePath, tasksDir, worktreesDir };
+  }
+
+  const cleanArgs = stripOption(args, "--max-steps");
+  const taskIdFlag = readOption(cleanArgs, "--task");
+  const taskIdArg = cleanArgs[0] && /^TASK-\d+$/.test(cleanArgs[0]) ? cleanArgs[0] : undefined;
+  let taskId = taskIdFlag ?? taskIdArg;
+  const steps: Array<Record<string, unknown>> = [];
+
+  if (!taskId) {
+    const run: any = await runRun(cleanArgs, storePath, tasksDir, config, git);
+    steps.push({ command: "run", state: run.state ?? null, ok: run.ok });
+    if (!run.ok) return { ...run, command: "run-wait", steps };
+    taskId = run.taskId;
+  }
+
+  if (!taskId) {
+    return { ok: false, command: "run-wait", error: "task_id_missing", storePath, tasksDir, worktreesDir, steps };
+  }
+
+  const store = createFileRunStore(storePath);
+  for (let stepIndex = steps.length; stepIndex < maxStepsResult.maxSteps; stepIndex++) {
+    const snapshot = await store.getCurrentState(taskId);
+    const state = snapshot?.state ?? null;
+
+    if (state === "DONE" || state === "ABORT") {
+      return runWaitResult(taskId, state, "terminal_state", steps, storePath, tasksDir, worktreesDir, config);
+    }
+
+    if (state === "HUMAN") {
+      return runWaitResult(taskId, state, "human_required", steps, storePath, tasksDir, worktreesDir, config);
+    }
+
+    if (state === null) {
+      const planned = await runPlan(["--task", taskId], storePath, tasksDir, config, git);
+      steps.push({ command: "plan", ok: planned.ok, state: planned.state ?? null });
+      if (!planned.ok) return { command: "run-wait", ...planned, steps };
+      continue;
+    }
+
+    if (state === "PLAN") {
+      const taskResult = await readTask(taskId, tasksDir);
+      if (!taskResult.ok) {
+        return { ok: false, command: "run-wait", error: "task_not_found", details: taskResult, taskId, storePath, tasksDir, worktreesDir, steps };
+      }
+      const taskDescription = taskResult.task.description ? `${taskResult.task.title}\n\n${taskResult.task.description}` : taskResult.task.title;
+      const planned = await producePlanForTask(taskId, taskDescription, cleanArgs, storePath, tasksDir, config, git);
+      steps.push({ command: "plan", ok: planned.ok, state: planned.state ?? null });
+      if (!planned.ok) return { command: "run-wait", ...planned, steps };
+      continue;
+    }
+
+    if (state === "REVIEW") {
+      const reviewed = await runReview([taskId], storePath, tasksDir, config);
+      steps.push({ command: "review", ok: reviewed.ok, state: reviewed.state ?? null, verdict: reviewed.verdict });
+      if (!reviewed.ok) return { command: "run-wait", ...reviewed, steps };
+      continue;
+    }
+
+    if (state === "BUILD") {
+      const workspace = await runWorkspaceCreate(taskId, storePath, tasksDir, worktreesDir);
+      steps.push({ command: "workspace create", ok: workspace.ok, state: workspace.state ?? null, created: workspace.created });
+      if (!workspace.ok) return { command: "run-wait", ...workspace, steps };
+      if (steps.length >= maxStepsResult.maxSteps) {
+        const snapshotAfterWorkspace = await store.getCurrentState(taskId);
+        return runWaitResult(taskId, snapshotAfterWorkspace?.state ?? null, "agent_loop_limit", steps, storePath, tasksDir, worktreesDir, config);
+      }
+
+      const generated = await runGenerate([taskId], storePath, tasksDir, worktreesDir, config);
+      steps.push({ command: "generate", ok: generated.ok, state: generated.state ?? null, reportPath: generated.reportPath });
+      if (!generated.ok) return { command: "run-wait", ...generated, steps };
+      continue;
+    }
+
+    if (state === "CHECK") {
+      const evaluatorProvider = defaultProvider(config, "evaluator");
+      const evaluateArgs = evaluatorProvider === "fixture" ? [taskId, "--verdict", "pass"] : [taskId];
+      const evaluated = await runEvaluate(evaluateArgs, storePath, tasksDir, worktreesDir, config);
+      steps.push({ command: "evaluate", ok: evaluated.ok, state: evaluated.state ?? null, verdict: evaluated.verdict, reportPath: evaluated.reportPath });
+      if (!evaluated.ok) return { command: "run-wait", ...evaluated, steps };
+      continue;
+    }
+
+    return { ok: false, command: "run-wait", error: "unsupported_state", taskId, state, storePath, tasksDir, worktreesDir, steps };
+  }
+
+  const snapshot = await store.getCurrentState(taskId);
+  const finalState = snapshot?.state ?? null;
+  const stoppedReason =
+    finalState === "HUMAN"
+      ? "human_required"
+      : finalState === "DONE" || finalState === "ABORT"
+        ? "terminal_state"
+        : "agent_loop_limit";
+  return runWaitResult(taskId, finalState, stoppedReason, steps, storePath, tasksDir, worktreesDir, config);
 }
 
 // ── next ──
@@ -283,11 +389,33 @@ async function runPlan(args: string[], storePath: string, tasksDir: string, conf
   // Update task status to in_progress
   await updateTask(taskId, { status: "in_progress" }, tasksDir);
 
-  // Run planner to produce contract
+  return producePlanForTask(taskId, taskStr, args, storePath, tasksDir, config, git, adapter);
+}
+
+async function producePlanForTask(
+  taskId: string,
+  taskDescription: string,
+  args: string[],
+  storePath: string,
+  tasksDir: string,
+  config: AnchorConfig,
+  git: GitRootResult,
+  adapter = readOption(args, "--provider") ?? readOption(args, "--adapter") ?? defaultProvider(config, "planner")
+) {
+  if (!git.ok) {
+    return {
+      ok: false,
+      error: "not_git_repo",
+      message: "Run anchor inside a git repository.",
+      cwd: process.cwd()
+    };
+  }
+
+  const store = createFileRunStore(storePath);
   const mode = parseMode(readOption(args, "--mode"));
   const planResult = await runPlanner({
     taskId,
-    taskDescription: taskStr,
+    taskDescription,
     artifactsDir: tasksDir,
     adapter,
     repoPath: git.root,
@@ -298,7 +426,6 @@ async function runPlan(args: string[], storePath: string, tasksDir: string, conf
     return { ok: false, error: planResult, taskId, storePath, tasksDir };
   }
 
-  // Write contract and append CONTRACT_PRODUCED
   const contract = await writeRawContract(tasksDir, taskId, planResult.contractYaml);
   const produced = await store.appendEvent(
     taskId,
@@ -442,9 +569,10 @@ async function runWorkspaceCreate(taskId: string, storePath: string, tasksDir: s
   }
 
   const events = await store.listEvents(taskId);
-  const contractSha = latestApprovedContractSha(events);
+  const contract = await readContractArtifact(tasksDir, taskId);
+  const contractSha = latestApprovedContractSha(events) ?? contract?.sha;
   if (!contractSha) {
-    return { ok: false, error: "approved_contract_sha_required", taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };
+    return { ok: false, error: "contract_sha_required", taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };
   }
 
   const workspace = await createGitWorkspace({
@@ -1228,6 +1356,12 @@ function readOption(args: string[], option: string) {
   return index === -1 ? undefined : args[index + 1];
 }
 
+function stripOption(args: string[], option: string) {
+  const index = args.indexOf(option);
+  if (index === -1) return args;
+  return [...args.slice(0, index), ...args.slice(index + 2)];
+}
+
 function isOptionPresent(args: string[], option: string) {
   return args.includes(option);
 }
@@ -1247,6 +1381,40 @@ function readFailTimes(args: string[]): { ok: true; failTimes: number } | { ok: 
     return { ok: false, code: "INVALID_FAIL_TIMES", message: "--fail-times must be a non-negative integer.", detail: value };
   }
   return { ok: true, failTimes: Number(value) };
+}
+
+function readMaxSteps(args: string[]): { ok: true; maxSteps: number } | { ok: false; code: "INVALID_MAX_STEPS"; message: string; detail: string } {
+  const value = readOption(args, "--max-steps") ?? "20";
+  if (!/^\d+$/.test(value) || Number(value) < 1) {
+    return { ok: false, code: "INVALID_MAX_STEPS", message: "--max-steps must be a positive integer.", detail: value };
+  }
+  return { ok: true, maxSteps: Number(value) };
+}
+
+async function runWaitResult(
+  taskId: string,
+  state: State | null,
+  stoppedReason: string,
+  steps: Array<Record<string, unknown>>,
+  storePath: string,
+  tasksDir: string,
+  worktreesDir: string,
+  config: AnchorConfig
+) {
+  const contract = await readContractArtifact(tasksDir, taskId);
+  return {
+    ok: true,
+    command: "run-wait",
+    taskId,
+    state,
+    stoppedReason,
+    storePath,
+    tasksDir,
+    worktreesDir,
+    steps,
+    nextActions: nextActionsForState(taskId, state, Boolean(contract), config),
+    nextCommands: nextCommandsForState(taskId, state, Boolean(contract), config)
+  };
 }
 
 function latestCodeProduced(events: StoredEvent[]) {

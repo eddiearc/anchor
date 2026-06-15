@@ -47,6 +47,13 @@ async function runJson(args, cwd) {
   }
 }
 
+async function initRepo(repo) {
+  await execFileAsync("git", ["init"], { cwd: repo, encoding: "utf8" });
+  await execFileAsync("git", ["config", "user.email", "anchor@example.test"], { cwd: repo, encoding: "utf8" });
+  await execFileAsync("git", ["config", "user.name", "Anchor Test"], { cwd: repo, encoding: "utf8" });
+  await execFileAsync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: repo, encoding: "utf8" });
+}
+
 test("anchor run and next guide the quickstart path without generating code", async () => {
   const repo = await tempDir();
   await execFileAsync("git", ["init"], { cwd: repo, encoding: "utf8" });
@@ -137,6 +144,87 @@ test("anchor run from a subdirectory uses the git root .anchor directory", async
   assert.equal(run.tasksDir, path.join(repoRoot, ".anchor", "tasks"));
   assert.equal(await exists(run.contractPath), true);
   assert.equal(await exists(path.join(subdir, ".anchor")), false);
+});
+
+test("anchor run-wait stops at HUMAN for standard mode contract approval", async () => {
+  const repo = await tempDir();
+  await initRepo(repo);
+
+  const result = await runJson(["run-wait", "test task"], repo);
+  assert.equal(result.ok, true);
+  assert.equal(result.command, "run-wait");
+  assert.equal(result.state, "HUMAN");
+  assert.equal(result.stoppedReason, "human_required");
+  assert.equal(result.taskId, "TASK-001");
+  assert.deepEqual(result.steps.map((step) => step.command), ["run"]);
+  assert.deepEqual(result.nextCommands, [
+    "anchor contract TASK-001",
+    "anchor approve TASK-001",
+    "anchor workspace create TASK-001"
+  ]);
+});
+
+test("anchor run-wait drives quick mode to DONE without human intervention", async () => {
+  const repo = await tempDir();
+  await initRepo(repo);
+
+  const result = await runJson(["run-wait", "--mode", "quick", "test quick task"], repo);
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "DONE");
+  assert.equal(result.stoppedReason, "terminal_state");
+  assert.deepEqual(
+    result.steps.map((step) => step.command),
+    ["run", "workspace create", "generate", "evaluate"]
+  );
+  assert.deepEqual(result.nextCommands, []);
+});
+
+test("anchor run-wait auto-reviews thorough mode then stops for human approval", async () => {
+  const repo = await tempDir();
+  await initRepo(repo);
+
+  const result = await runJson(["run-wait", "--mode", "thorough", "test thorough task"], repo);
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "HUMAN");
+  assert.equal(result.stoppedReason, "human_required");
+  assert.deepEqual(
+    result.steps.map((step) => step.command),
+    ["run", "review"]
+  );
+});
+
+test("anchor run-wait stops at the agent loop limit", async () => {
+  const repo = await tempDir();
+  await initRepo(repo);
+
+  const result = await runJson(["run-wait", "--max-steps", "2", "--mode", "quick", "test quick task"], repo);
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "BUILD");
+  assert.equal(result.stoppedReason, "agent_loop_limit");
+  assert.deepEqual(
+    result.steps.map((step) => step.command),
+    ["run", "workspace create"]
+  );
+});
+
+test("anchor run-wait resumes after human approval and finishes agent-owned work", async () => {
+  const repo = await tempDir();
+  await initRepo(repo);
+
+  const first = await runJson(["run-wait", "test task"], repo);
+  assert.equal(first.state, "HUMAN");
+
+  const approved = await runJson(["approve", first.taskId], repo);
+  assert.equal(approved.state, "BUILD");
+
+  const resumed = await runJson(["run-wait", first.taskId], repo);
+  assert.equal(resumed.ok, true);
+  assert.equal(resumed.state, "DONE");
+  assert.equal(resumed.stoppedReason, "terminal_state");
+  assert.deepEqual(
+    resumed.steps.map((step) => step.command),
+    ["workspace create", "generate", "evaluate"]
+  );
 });
 
 test("anchor next reports a clear error for unknown tasks", async () => {

@@ -42,24 +42,22 @@ anchor --help
 
 ```bash
 # Inside any git repo
-anchor run "Add rate limiting to the login endpoint"
+anchor run-wait "Add rate limiting to the login endpoint"
 
-# See what's next
-anchor next <taskId>
-
-# View the contract
+# If it stops for human contract approval
 anchor contract <taskId>
-
-# Approve and proceed
 anchor approve <taskId>
-anchor workspace create <taskId>
-anchor generate <taskId>
-anchor next <taskId>
-anchor evaluate <taskId>
 
-# Check status
+# Resume agent-owned work until DONE, ABORT, HUMAN, error, or loop limit
+anchor run-wait <taskId>
+
+# Inspect status any time
 anchor status <taskId>
 ```
+
+Use `anchor run` and `anchor next` when you want manual step-by-step control.
+Use `anchor run-wait` when you want Anchor to automatically advance all
+agent-owned states and stop only when human input is required.
 
 Anchor works without an init step. Runtime files are created under `.anchor/`
 as needed, and repo config is optional.
