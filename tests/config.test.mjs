@@ -1,14 +1,41 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { homedir } from "node:os";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, writeFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 // Import from dist after build
 import { composePrompt, loadAnchorConfig } from "../dist/index.js";
 
+const execFileAsync = promisify(execFile);
+const originalHome = process.env.HOME;
+const originalConfigPath = process.env.ANCHOR_CONFIG_PATH;
+const configTestHome = await tempDir("anchor-config-home-");
+process.env.HOME = configTestHome;
+delete process.env.ANCHOR_CONFIG_PATH;
+
+test.after(async () => {
+  if (originalHome) process.env.HOME = originalHome;
+  else delete process.env.HOME;
+  if (originalConfigPath) process.env.ANCHOR_CONFIG_PATH = originalConfigPath;
+  else delete process.env.ANCHOR_CONFIG_PATH;
+  await rm(configTestHome, { recursive: true, force: true }).catch(() => {});
+});
+
 async function tempDir(prefix = "anchor-config-") {
-  return await mkdtemp(path.join(homedir(), ".anchor-test-"));
+  return await mkdtemp(path.join(tmpdir(), prefix));
+}
+
+async function exists(filePath) {
+  try {
+    await stat(filePath);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 // ── composePrompt ──
@@ -85,8 +112,7 @@ test("loadAnchorConfig parses single-line values", async () => {
     ""
   ].join("\n"));
 
-  // Note: loadAnchorConfig uses ANCHOR_CONFIG_PATH env var or ~/.anchor/config.yaml
-  // We test parseConfig indirectly through a custom env
+  // Test parseConfig indirectly through a custom env.
   const origConfigPath = process.env.ANCHOR_CONFIG_PATH;
   process.env.ANCHOR_CONFIG_PATH = configPath;
   try {
@@ -136,7 +162,7 @@ test("loadAnchorConfig returns undefined for missing optional fields", async () 
     const config = await loadAnchorConfig();
     assert.equal(config.agent, "codex");
     assert.equal(config.agent_retry_max, undefined);
-    assert.equal(config.prompt, undefined);
+    assert.ok(config.prompt);
   } finally {
     if (origConfigPath) process.env.ANCHOR_CONFIG_PATH = origConfigPath;
     else delete process.env.ANCHOR_CONFIG_PATH;
@@ -227,8 +253,82 @@ test("loadAnchorConfig handles empty config", async () => {
   process.env.ANCHOR_CONFIG_PATH = configPath;
   try {
     const config = await loadAnchorConfig();
-    assert.equal(config.agent, undefined);
+    assert.equal(config.agent, "codex");
   } finally {
+    if (origConfigPath) process.env.ANCHOR_CONFIG_PATH = origConfigPath;
+    else delete process.env.ANCHOR_CONFIG_PATH;
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test("loadAnchorConfig auto-creates global config when missing", async () => {
+  const dir = await tempDir();
+  const origHome = process.env.HOME;
+  const origConfigPath = process.env.ANCHOR_CONFIG_PATH;
+  process.env.HOME = dir;
+  delete process.env.ANCHOR_CONFIG_PATH;
+
+  try {
+    const config = await loadAnchorConfig();
+    assert.equal(config.agent, "codex");
+    assert.equal(await exists(path.join(dir, ".anchor", "config.yaml")), true);
+  } finally {
+    if (origHome) process.env.HOME = origHome;
+    else delete process.env.HOME;
+    if (origConfigPath) process.env.ANCHOR_CONFIG_PATH = origConfigPath;
+    else delete process.env.ANCHOR_CONFIG_PATH;
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test("loadAnchorConfig merges defaults, global config, repo config, and explicit config", async () => {
+  const dir = await tempDir();
+  const repo = path.join(dir, "repo");
+  const repoAnchor = path.join(repo, ".anchor");
+  const explicitPath = path.join(dir, "explicit.yaml");
+  const origHome = process.env.HOME;
+  const origConfigPath = process.env.ANCHOR_CONFIG_PATH;
+  const origCwd = process.cwd();
+
+  await mkdir(repoAnchor, { recursive: true });
+  await mkdir(path.join(dir, ".anchor"), { recursive: true });
+  await execFileAsync("git", ["init"], { cwd: repo, encoding: "utf8" });
+  await writeFile(path.join(dir, ".anchor", "config.yaml"), [
+    "agent: global-agent",
+    "planner_prompt: global planner",
+    "generator_prompt: global generator",
+    "agent_retry_max: 2",
+    ""
+  ].join("\n"));
+  await writeFile(path.join(repoAnchor, "config.yaml"), [
+    "agent: repo-agent",
+    "generator_prompt: repo generator",
+    "evaluator_prompt: repo evaluator",
+    ""
+  ].join("\n"));
+  await writeFile(explicitPath, [
+    "agent_allow_network: true",
+    "evaluator_prompt: explicit evaluator",
+    ""
+  ].join("\n"));
+
+  process.env.HOME = dir;
+  process.env.ANCHOR_CONFIG_PATH = explicitPath;
+  process.chdir(repo);
+
+  try {
+    const config = await loadAnchorConfig();
+    assert.equal(config.agent, "repo-agent");
+    assert.equal(config.planner_prompt, "global planner");
+    assert.equal(config.generator_prompt, "repo generator");
+    assert.equal(config.evaluator_prompt, "explicit evaluator");
+    assert.equal(config.agent_retry_max, 2);
+    assert.equal(config.agent_allow_network, true);
+    assert.ok(config.prompt);
+  } finally {
+    process.chdir(origCwd);
+    if (origHome) process.env.HOME = origHome;
+    else delete process.env.HOME;
     if (origConfigPath) process.env.ANCHOR_CONFIG_PATH = origConfigPath;
     else delete process.env.ANCHOR_CONFIG_PATH;
     await rm(dir, { recursive: true, force: true }).catch(() => {});

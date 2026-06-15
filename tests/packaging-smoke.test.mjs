@@ -35,7 +35,9 @@ test("npm tarball installs an anchor binary that works outside the source repo",
   const packDir = path.join(tmp, "pack");
   const prefix = path.join(tmp, "prefix");
   const fixtureRepo = path.join(tmp, "fixture-repo");
+  const fixtureHome = path.join(tmp, "home");
   await mkdir(packDir, { recursive: true });
+  await mkdir(fixtureHome, { recursive: true });
 
   const pack = await execJson("npm", ["pack", "--json", "--pack-destination", packDir], { cwd: repoRoot });
   assert.equal(pack.length, 1);
@@ -67,20 +69,20 @@ test("npm tarball installs an anchor binary that works outside the source repo",
 
   const help = await execText(anchorBin, ["--help"]);
   assert.match(help, /Usage:/);
+  assert.doesNotMatch(help, /anchor init/);
   assert.equal(await execText(anchorBin, ["--version"]), packageJson.version);
 
   await execFileAsync("git", ["init", fixtureRepo], { encoding: "utf8" });
-  const init = await execJson(anchorBin, ["init"], { cwd: fixtureRepo });
-  assert.equal(init.ok, true);
-  assert.equal(init.command, "init");
-  assert.equal(await exists(path.join(fixtureRepo, ".anchor", "config.yaml")), true);
+  const commandEnv = { ...process.env, HOME: fixtureHome };
 
-  const demo = await execJson(anchorBin, ["demo"], { cwd: fixtureRepo });
+  const demo = await execJson(anchorBin, ["demo"], { cwd: fixtureRepo, env: commandEnv });
   assert.equal(demo.ok, true);
   assert.equal(demo.finalState, "DONE");
   assert.equal(await exists(path.join(fixtureRepo, ".anchor", "events.jsonl")), true);
+  assert.equal(await exists(path.join(fixtureRepo, ".anchor", "config.yaml")), false);
+  assert.equal(await exists(path.join(fixtureHome, ".anchor", "config.yaml")), true);
 
-  const run = await execJson(anchorBin, ["run", "test task"], { cwd: fixtureRepo });
+  const run = await execJson(anchorBin, ["run", "test task"], { cwd: fixtureRepo, env: commandEnv });
   assert.equal(run.ok, true);
   assert.equal(run.command, "run");
   assert.equal(run.state, "HUMAN");
@@ -91,20 +93,20 @@ test("npm tarball installs an anchor binary that works outside the source repo",
     `anchor workspace create ${run.taskId}`
   ]);
 
-  const next = await execJson(anchorBin, ["next", run.taskId], { cwd: fixtureRepo });
+  const next = await execJson(anchorBin, ["next", run.taskId], { cwd: fixtureRepo, env: commandEnv });
   assert.equal(next.ok, true);
   assert.equal(next.state, "HUMAN");
   assert.deepEqual(next.nextCommands, run.nextCommands);
 
-  const contract = await execJson(anchorBin, ["contract", run.taskId], { cwd: fixtureRepo });
+  const contract = await execJson(anchorBin, ["contract", run.taskId], { cwd: fixtureRepo, env: commandEnv });
   assert.equal(contract.ok, true);
 
-  const status = await execJson(anchorBin, ["status", run.taskId], { cwd: fixtureRepo });
+  const status = await execJson(anchorBin, ["status", run.taskId], { cwd: fixtureRepo, env: commandEnv });
   assert.equal(status.ok, true);
   assert.equal(status.taskId, run.taskId);
   assert.equal(status.state, "HUMAN");
 
-  const events = await execJson(anchorBin, ["events", run.taskId], { cwd: fixtureRepo });
+  const events = await execJson(anchorBin, ["events", run.taskId], { cwd: fixtureRepo, env: commandEnv });
   assert.equal(events.ok, true);
   assert.equal(events.taskId, run.taskId);
   assert.deepEqual(

@@ -19,7 +19,11 @@ async function runCliJson(args, cwd) {
       cwd,
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
-      env: { ...process.env, ANCHOR_CONFIG_PATH: path.join(cwd, ".test-anchor-home", "config.yaml") }
+      env: {
+        ...process.env,
+        HOME: path.join(cwd, ".test-home"),
+        ANCHOR_CONFIG_PATH: path.join(cwd, ".test-anchor-home", "config.yaml")
+      }
     });
     return { exitCode: 0, json: JSON.parse(stdout) };
   } catch (error) {
@@ -36,10 +40,6 @@ test("agent protocol exposes structured nextActions for HUMAN BUILD CHECK and DO
   await execFileAsync("git", ["config", "user.email", "anchor@example.test"], { cwd: repo, encoding: "utf8" });
   await execFileAsync("git", ["config", "user.name", "Anchor Test"], { cwd: repo, encoding: "utf8" });
   await execFileAsync("git", ["commit", "--allow-empty", "-m", "initial"], { cwd: repo, encoding: "utf8" });
-
-  const init = await runCliJson(["init"], repo);
-  assert.equal(init.exitCode, 0);
-  assert.equal(init.json.ok, true);
 
   const run = await runCliJson(["run", "test task"], repo);
   assert.equal(run.exitCode, 0);
@@ -88,15 +88,8 @@ test("agent protocol exposes structured nextActions for HUMAN BUILD CHECK and DO
 });
 
 test("agent protocol returns non-zero exit with JSON errors for predictable failures", async () => {
-  const outside = await tempDir();
-  const nonGit = await runCliJson(["init"], outside);
-  assert.equal(nonGit.exitCode, 1);
-  assert.equal(nonGit.json.ok, false);
-  assert.equal(nonGit.json.error, "not_git_repo");
-
   const repo = await tempDir();
   await execFileAsync("git", ["init"], { cwd: repo, encoding: "utf8" });
-  await runCliJson(["init"], repo);
 
   const unknownNext = await runCliJson(["next", "TASK-404"], repo);
   assert.equal(unknownNext.exitCode, 1);

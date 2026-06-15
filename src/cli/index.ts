@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -41,7 +41,6 @@ import {
 const defaultStorePath = ".anchor/events.jsonl";
 const defaultTasksDir = ".anchor/tasks";
 const defaultWorktreesDir = ".anchor/worktrees";
-const defaultLocalConfigPath = ".anchor/config.yaml";
 const execFileAsync = promisify(execFile);
 
 type CliResult = {
@@ -69,10 +68,6 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   const tasksDir = options.tasksDir ?? process.env.ANCHOR_TASKS_DIR ?? defaultTasksDir;
   const worktreesDir = options.worktreesDir ?? process.env.ANCHOR_WORKTREES_DIR ?? defaultWorktreesDir;
   const config: AnchorConfig = await loadAnchorConfig();
-
-  if (command === "init") {
-    return json(await runInit(storePath, tasksDir, worktreesDir));
-  }
 
   if (command === "run") {
     return json(await runRun(rest, storePath, tasksDir, config));
@@ -145,57 +140,6 @@ export async function runCli(args: string[], options: CliOptions = {}): Promise<
   return {
     exitCode: 1,
     output: [`Unknown command: ${command}`, "", getAnchorHelp()].join("\n")
-  };
-}
-
-// ── init ──
-
-async function runInit(storePath: string, tasksDir: string, worktreesDir: string) {
-  const git = await gitRoot();
-  if (!git.ok) {
-    return {
-      ok: false,
-      error: "not_git_repo",
-      message: "Run anchor init inside a git repository.",
-      cwd: process.cwd()
-    };
-  }
-
-  const anchorDir = path.resolve(git.root, ".anchor");
-  const configPath = path.resolve(git.root, defaultLocalConfigPath);
-  const resolvedStorePath = path.resolve(git.root, storePath);
-  const resolvedTasksDir = path.resolve(git.root, tasksDir);
-  const resolvedWorktreesDir = path.resolve(git.root, worktreesDir);
-  await mkdir(anchorDir, { recursive: true });
-  await mkdir(path.dirname(resolvedStorePath), { recursive: true });
-  await mkdir(resolvedTasksDir, { recursive: true });
-  await mkdir(resolvedWorktreesDir, { recursive: true });
-
-  let configCreated = false;
-  if (!(await exists(configPath))) {
-    await writeFile(
-      configPath,
-      [
-        "# Anchor local quickstart config",
-        "# Global agent prompts still load from ~/.anchor/config.yaml unless ANCHOR_CONFIG_PATH is set.",
-        "agent: codex",
-        ""
-      ].join("\n")
-    );
-    configCreated = true;
-  }
-
-  return {
-    ok: true,
-    command: "init",
-    gitRoot: git.root,
-    anchorDir,
-    configPath,
-    configCreated,
-    storePath: resolvedStorePath,
-    tasksDir: resolvedTasksDir,
-    worktreesDir: resolvedWorktreesDir,
-    nextCommands: ["anchor run \"test task\""]
   };
 }
 
@@ -1312,16 +1256,6 @@ async function gitRoot(): Promise<{ ok: true; root: string } | { ok: false }> {
     return { ok: true, root: stdout.trim() };
   } catch {
     return { ok: false };
-  }
-}
-
-async function exists(filePath: string): Promise<boolean> {
-  try {
-    await stat(filePath);
-    return true;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
-    throw error;
   }
 }
 
