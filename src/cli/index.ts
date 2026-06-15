@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -214,6 +214,10 @@ async function runWait(args: string[], storePath: string, tasksDir: string, work
       return runWaitResult(taskId, state, "human_required", steps, storePath, tasksDir, worktreesDir, config);
     }
 
+    if (state !== null && await hasAgentStop(tasksDir, taskId)) {
+      return runWaitResult(taskId, state, "agent_stop", steps, storePath, tasksDir, worktreesDir, config);
+    }
+
     if (state === null) {
       const planned = await runPlan(["--task", taskId], storePath, tasksDir, config, git);
       steps.push({ command: "plan", ok: planned.ok, state: planned.state ?? null });
@@ -416,6 +420,7 @@ async function producePlanForTask(
 
   const store = createFileRunStore(storePath);
   const previousReview = latestRevisionReview(await store.listEvents(taskId));
+  const operatorSteer = await readOperatorSteer(tasksDir, taskId);
   const mode = parseMode(readOption(args, "--mode"));
   const planResult = await runPlanner({
     taskId,
@@ -426,11 +431,13 @@ async function producePlanForTask(
     config,
     mode,
     previousReviewerFeedback: previousReview?.payload.feedback ?? null,
-    previousReviewerReportPath: previousReview?.payload.report_path ?? null
+    previousReviewerReportPath: previousReview?.payload.report_path ?? null,
+    operatorSteer: operatorSteer?.content ?? null
   });
   if (!planResult.ok) {
     return { ok: false, error: planResult, taskId, storePath, tasksDir };
   }
+  await consumeOperatorSteer(operatorSteer);
 
   const contract = await writeRawContract(tasksDir, taskId, planResult.contractYaml);
   const produced = await store.appendEvent(
@@ -726,6 +733,7 @@ async function runGenerate(args: string[], storePath: string, tasksDir: string, 
 
   const events = await store.listEvents(taskId);
   const previousEvaluation = latestFailedEvaluation(events);
+  const operatorSteer = await readOperatorSteer(tasksDir, taskId);
   const attempt = events.filter((event) => event.event_type === "CODE_PRODUCED").length + 1;
   const result = await runGenerator({
     taskId,
@@ -740,12 +748,15 @@ async function runGenerate(args: string[], storePath: string, tasksDir: string, 
     allowNetwork: allowNetwork || _config?.agent_allow_network === true,
     currentStepId: snapshot.context.currentStepId,
     previousEvaluatorFeedback: previousEvaluation?.payload.feedback ?? null,
-    previousEvaluatorReportPath: previousEvaluation?.payload.report_path ?? null
+    previousEvaluatorReportPath: previousEvaluation?.payload.report_path ?? null,
+    operatorSteer: operatorSteer?.content ?? null
   });
 
   if (!result.ok) {
+    if (hasRoleReport(result)) await consumeOperatorSteer(operatorSteer);
     return { ok: false, command: "generate", error: result, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };
   }
+  await consumeOperatorSteer(operatorSteer);
 
   const eventResult = await store.appendEvent(
     taskId,
@@ -812,6 +823,7 @@ async function runEvaluate(args: string[], storePath: string, tasksDir: string, 
     return { ok: false, error: "contract_not_found", taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };
   }
 
+  const operatorSteer = await readOperatorSteer(tasksDir, taskId);
   const result = await runEvaluator({
     taskId,
     artifactsDir: tasksDir,
@@ -822,11 +834,14 @@ async function runEvaluate(args: string[], storePath: string, tasksDir: string, 
     verdict,
     config: _config,
     allowNetwork: allowNetwork || _config?.agent_allow_network === true,
-    currentStepId: snapshot.context.currentStepId
+    currentStepId: snapshot.context.currentStepId,
+    operatorSteer: operatorSteer?.content ?? null
   });
   if (!result.ok) {
+    if (hasRoleReport(result)) await consumeOperatorSteer(operatorSteer);
     return { ok: false, command: "evaluate", error: result, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };
   }
+  await consumeOperatorSteer(operatorSteer);
 
   const eventResult = await store.appendEvent(
     taskId,
@@ -844,6 +859,15 @@ async function runEvaluate(args: string[], storePath: string, tasksDir: string, 
   );
   if (!eventResult.ok) {
     return { ok: false, command: "evaluate", error: eventResult, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir, reportPath: result.reportPath };
+  }
+  if (result.report.verdict === "FAIL") {
+    await writeNextFindings(tasksDir, taskId, {
+      command: "evaluate",
+      attempt: result.report.attempt,
+      provider: result.report.provider,
+      reportPath: result.reportPath,
+      feedback: result.report.feedback
+    });
   }
 
   const finalSnapshot = await store.getCurrentState(taskId);
@@ -915,11 +939,35 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
   const steps: Array<Record<string, unknown>> = [];
   let state: State = snapshot.state;
   while (state === "BUILD" || state === "CHECK") {
+    if (await hasAgentStop(tasksDir, taskId)) {
+      const stoppedSnapshot = await store.getCurrentState(taskId);
+      await writeProgress(tasksDir, taskId, {
+        command: "run-retry",
+        state: stoppedSnapshot?.state ?? state,
+        stoppedReason: "agent_stop",
+        steps
+      });
+      return {
+        ok: true,
+        command: "run-retry",
+        taskId,
+        state: stoppedSnapshot?.state ?? state,
+        stoppedReason: "agent_stop",
+        context: stoppedSnapshot?.context ?? snapshot.context,
+        generatorProvider,
+        evaluatorProvider,
+        storePath,
+        tasksDir,
+        worktreesDir,
+        steps
+      };
+    }
     const loopSnapshot = await store.getCurrentState(taskId);
     const loopContext = loopSnapshot?.context ?? snapshot.context;
     if (state === "BUILD") {
       const events = await store.listEvents(taskId);
       const previousEvaluation = latestFailedEvaluation(events);
+      const operatorSteer = await readOperatorSteer(tasksDir, taskId);
       const attempt = events.filter((event) => event.event_type === "CODE_PRODUCED").length + 1;
       const result = await runGenerator({
         taskId,
@@ -934,11 +982,14 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
         allowNetwork: allowNetwork || _config?.agent_allow_network === true,
         currentStepId: loopContext.currentStepId,
         previousEvaluatorFeedback: previousEvaluation?.payload.feedback ?? null,
-        previousEvaluatorReportPath: previousEvaluation?.payload.report_path ?? null
+        previousEvaluatorReportPath: previousEvaluation?.payload.report_path ?? null,
+        operatorSteer: operatorSteer?.content ?? null
       });
       if (!result.ok) {
+        if (hasRoleReport(result)) await consumeOperatorSteer(operatorSteer);
         return { ok: false, command: "run-retry", error: result, taskId, state, storePath, tasksDir, worktreesDir, steps };
       }
+      await consumeOperatorSteer(operatorSteer);
 
       const eventResult = await store.appendEvent(
         taskId,
@@ -957,6 +1008,7 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
     const events = await store.listEvents(taskId);
     const attempt = events.filter((event) => event.event_type === "EVAL_COMPLETE").length + 1;
     const latestCode = latestCodeProduced(events);
+    const operatorSteer = await readOperatorSteer(tasksDir, taskId);
     const result = await runEvaluator({
       taskId,
       artifactsDir: tasksDir,
@@ -970,11 +1022,14 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
       config: _config,
       allowNetwork: allowNetwork || _config?.agent_allow_network === true,
       retryFailTimes: evaluatorProvider === "fixture" ? failTimesResult.failTimes : undefined,
-      currentStepId: loopContext.currentStepId
+      currentStepId: loopContext.currentStepId,
+      operatorSteer: operatorSteer?.content ?? null
     });
     if (!result.ok) {
+      if (hasRoleReport(result)) await consumeOperatorSteer(operatorSteer);
       return { ok: false, command: "run-retry", error: result, taskId, state, storePath, tasksDir, worktreesDir, steps };
     }
+    await consumeOperatorSteer(operatorSteer);
 
     const eventResult = await store.appendEvent(
       taskId,
@@ -996,6 +1051,15 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
     }
 
     steps.push({ role: "evaluator", provider: result.report.provider, attempt, reportPath: result.reportPath, verdict: result.report.verdict, testsRun: result.report.testsRun, testsFailed: result.report.testsFailed, event: summarizeEvent(eventResult.event) });
+    if (result.report.verdict === "FAIL") {
+      await writeNextFindings(tasksDir, taskId, {
+        command: "run-retry",
+        attempt,
+        provider: result.report.provider,
+        reportPath: result.reportPath,
+        feedback: result.report.feedback
+      });
+    }
     if (eventResult.event.state_after === "BUILD") {
       await cleanupEvaluatorScratch(workspace.metadata.worktreePath);
     }
@@ -1006,6 +1070,11 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
   if (finalSnapshot) {
     await updateTask(taskId, { status: taskStatusFromState(finalSnapshot.state) }, tasksDir);
   }
+  await writeProgress(tasksDir, taskId, {
+    command: "run-retry",
+    state: finalSnapshot?.state ?? state,
+    steps
+  });
 
   return {
     ok: true,
@@ -1046,16 +1115,20 @@ async function runReview(args: string[], storePath: string, tasksDir: string, _c
     return { ok: false, error: "contract_not_found", taskId, state: snapshot.state, storePath, tasksDir };
   }
 
+  const operatorSteer = await readOperatorSteer(tasksDir, taskId);
   const result = await runReviewer({
     taskId,
     artifactsDir: tasksDir,
     contract: contract.content,
     adapter,
-    verdict
+    verdict,
+    operatorSteer: operatorSteer?.content ?? null
   });
   if (!result.ok) {
+    if (hasRoleReport(result)) await consumeOperatorSteer(operatorSteer);
     return { ok: false, command: "review", error: result, taskId, state: snapshot.state, storePath, tasksDir };
   }
+  await consumeOperatorSteer(operatorSteer);
 
   const eventResult = await store.appendEvent(
     taskId,
@@ -1425,6 +1498,12 @@ async function runWaitResult(
   const contract = await readContractArtifact(tasksDir, taskId);
   const store = createFileRunStore(storePath);
   const snapshot = await store.getCurrentState(taskId);
+  await writeProgress(tasksDir, taskId, {
+    command: "run-wait",
+    state,
+    stoppedReason,
+    steps
+  });
   return {
     ok: true,
     command: "run-wait",
@@ -1462,6 +1541,102 @@ function latestRevisionReview(events: StoredEvent[]) {
       event.payload.type === "REVIEW_COMPLETE" && event.payload.verdict === "NEEDS_REVISION"
   );
   return reviewEvents[reviewEvents.length - 1] ?? null;
+}
+
+type OperatorSteer = {
+  path: string;
+  content: string;
+};
+
+async function hasAgentStop(tasksDir: string, taskId: string) {
+  try {
+    await readFile(path.join(tasksDir, taskId, "AGENT_STOP"), "utf8");
+    return true;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function readOperatorSteer(tasksDir: string, taskId: string): Promise<OperatorSteer | null> {
+  const steerPath = path.join(tasksDir, taskId, "STEER.md");
+  try {
+    return {
+      path: steerPath,
+      content: await readFile(steerPath, "utf8")
+    };
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function consumeOperatorSteer(steer: OperatorSteer | null) {
+  if (!steer) return;
+  await rename(steer.path, `${steer.path}.consumed`).catch(async (error) => {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+    throw error;
+  });
+}
+
+function hasRoleReport(result: unknown): result is { report: unknown } {
+  return typeof result === "object" && result !== null && "report" in result;
+}
+
+async function writeProgress(
+  tasksDir: string,
+  taskId: string,
+  input: {
+    command: string;
+    state: State | null;
+    stoppedReason?: string;
+    steps: Array<Record<string, unknown>>;
+  }
+) {
+  const artifactDir = path.join(tasksDir, taskId);
+  await mkdir(artifactDir, { recursive: true });
+  const lines = [
+    "# Anchor Progress",
+    "",
+    `taskId: ${taskId}`,
+    `command: ${input.command}`,
+    `state: ${input.state ?? "null"}`,
+    `stoppedReason: ${input.stoppedReason ?? ""}`,
+    `updatedAt: ${new Date().toISOString()}`,
+    "",
+    "steps:",
+    ...input.steps.map((step, index) => `- ${index + 1}: ${JSON.stringify(step)}`),
+    ""
+  ];
+  await writeFile(path.join(artifactDir, "PROGRESS.md"), lines.join("\n"));
+}
+
+async function writeNextFindings(
+  tasksDir: string,
+  taskId: string,
+  input: {
+    command: string;
+    attempt?: number;
+    provider?: string;
+    reportPath?: string;
+    feedback: string;
+  }
+) {
+  const artifactDir = path.join(tasksDir, taskId);
+  await mkdir(artifactDir, { recursive: true });
+  const lines = [
+    "# Next Findings",
+    "",
+    `taskId: ${taskId}`,
+    `command: ${input.command}`,
+    `attempt: ${input.attempt ?? ""}`,
+    `provider: ${input.provider ?? ""}`,
+    `reportPath: ${input.reportPath ?? ""}`,
+    "",
+    input.feedback,
+    ""
+  ];
+  await writeFile(path.join(artifactDir, "NEXT_FINDINGS.md"), lines.join("\n"));
 }
 
 async function cleanupEvaluatorScratch(worktreePath: string) {

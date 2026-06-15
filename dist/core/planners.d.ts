@@ -10,6 +10,7 @@ export type RunPlannerInput = {
     mode?: "quick" | "standard" | "thorough";
     previousReviewerFeedback?: string | null;
     previousReviewerReportPath?: string | null;
+    operatorSteer?: string | null;
 };
 export type PlannerOk = {
     ok: true;

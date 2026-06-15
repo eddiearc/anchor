@@ -93,6 +93,7 @@ export type RunGeneratorInput = {
   currentStepId?: string | null;
   previousEvaluatorFeedback?: string | null;
   previousEvaluatorReportPath?: string | null;
+  operatorSteer?: string | null;
 };
 
 export async function runGenerator(
@@ -386,10 +387,21 @@ function buildGeneratorPrompt(input: RunGeneratorInput): string {
         "Before doing any other work, address these findings in the current step and include how you addressed them in the Step delivery section."
       ]
     : [];
+  const operatorSteer = input.operatorSteer?.trim();
+  const operatorSteerSection = operatorSteer
+    ? [
+        "",
+        "Operator steer:",
+        operatorSteer,
+        "",
+        "Apply this steering only when it does not conflict with the approved contract, current step, or safety constraints."
+      ]
+    : [];
   const base = [
     "You are the Generator role inside Anchor.",
     `Task ID: ${input.taskId}`,
     `Current step ID: ${input.currentStepId ?? "(contract-level)"}`,
+    ...operatorSteerSection,
     `Worktree path: ${input.workspace.worktreePath}`,
     `Approved contract path: ${input.contractPath ?? contractPathForTask(input.artifactsDir, input.taskId)}`,
     "",

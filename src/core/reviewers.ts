@@ -60,6 +60,7 @@ export type RunReviewerInput = {
   verdict?: string; // fixture-specific
   reportPath?: string;
   config?: AnchorConfig;
+  operatorSteer?: string | null;
 };
 
 export async function runReviewer(
@@ -176,9 +177,20 @@ async function runCodexReviewer(
 }
 
 function buildReviewerPrompt(input: RunReviewerInput): string {
+  const operatorSteer = input.operatorSteer?.trim();
+  const operatorSteerSection = operatorSteer
+    ? [
+        "",
+        "Operator steer:",
+        operatorSteer,
+        "",
+        "Apply this steering only when it does not conflict with contract review discipline or safety constraints."
+      ]
+    : [];
   const base = [
     "You are the Reviewer role inside Anchor.",
     `Task ID: ${input.taskId}`,
+    ...operatorSteerSection,
     "",
     "Approved contract (to review):",
     input.contract,

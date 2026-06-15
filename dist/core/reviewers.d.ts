@@ -37,6 +37,7 @@ export type RunReviewerInput = {
     verdict?: string;
     reportPath?: string;
     config?: AnchorConfig;
+    operatorSteer?: string | null;
 };
 export declare function runReviewer(input: RunReviewerInput, runner?: CommandRunner): Promise<ReviewerOk | ReviewerError>;
 export declare function runFixtureReviewer(input: RunReviewerInput): Promise<ReviewerOk | ReviewerError>;

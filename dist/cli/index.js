@@ -2,7 +2,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -134,6 +134,9 @@ async function runWait(args, storePath, tasksDir, worktreesDir, config, git) {
         }
         if (state === "HUMAN") {
             return runWaitResult(taskId, state, "human_required", steps, storePath, tasksDir, worktreesDir, config);
+        }
+        if (state !== null && await hasAgentStop(tasksDir, taskId)) {
+            return runWaitResult(taskId, state, "agent_stop", steps, storePath, tasksDir, worktreesDir, config);
         }
         if (state === null) {
             const planned = await runPlan(["--task", taskId], storePath, tasksDir, config, git);
@@ -308,6 +311,7 @@ async function producePlanForTask(taskId, taskDescription, args, storePath, task
     }
     const store = createFileRunStore(storePath);
     const previousReview = latestRevisionReview(await store.listEvents(taskId));
+    const operatorSteer = await readOperatorSteer(tasksDir, taskId);
     const mode = parseMode(readOption(args, "--mode"));
     const planResult = await runPlanner({
         taskId,
@@ -318,11 +322,13 @@ async function producePlanForTask(taskId, taskDescription, args, storePath, task
         config,
         mode,
         previousReviewerFeedback: previousReview?.payload.feedback ?? null,
-        previousReviewerReportPath: previousReview?.payload.report_path ?? null
+        previousReviewerReportPath: previousReview?.payload.report_path ?? null,
+        operatorSteer: operatorSteer?.content ?? null
     });
     if (!planResult.ok) {
         return { ok: false, error: planResult, taskId, storePath, tasksDir };
     }
+    await consumeOperatorSteer(operatorSteer);
     const contract = await writeRawContract(tasksDir, taskId, planResult.contractYaml);
     const produced = await store.appendEvent(taskId, {
         type: "CONTRACT_PRODUCED",
@@ -568,6 +574,7 @@ async function runGenerate(args, storePath, tasksDir, worktreesDir, _config) {
     }
     const events = await store.listEvents(taskId);
     const previousEvaluation = latestFailedEvaluation(events);
+    const operatorSteer = await readOperatorSteer(tasksDir, taskId);
     const attempt = events.filter((event) => event.event_type === "CODE_PRODUCED").length + 1;
     const result = await runGenerator({
         taskId,
@@ -582,11 +589,15 @@ async function runGenerate(args, storePath, tasksDir, worktreesDir, _config) {
         allowNetwork: allowNetwork || _config?.agent_allow_network === true,
         currentStepId: snapshot.context.currentStepId,
         previousEvaluatorFeedback: previousEvaluation?.payload.feedback ?? null,
-        previousEvaluatorReportPath: previousEvaluation?.payload.report_path ?? null
+        previousEvaluatorReportPath: previousEvaluation?.payload.report_path ?? null,
+        operatorSteer: operatorSteer?.content ?? null
     });
     if (!result.ok) {
+        if (hasRoleReport(result))
+            await consumeOperatorSteer(operatorSteer);
         return { ok: false, command: "generate", error: result, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };
     }
+    await consumeOperatorSteer(operatorSteer);
     const eventResult = await store.appendEvent(taskId, { type: "CODE_PRODUCED", report_path: result.reportPath, files_changed: result.filesChanged, attempt, provider: result.report.provider, step_id: snapshot.context.currentStepId }, "generator");
     if (!eventResult.ok) {
         return { ok: false, command: "generate", error: eventResult, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir, reportPath: result.reportPath };
@@ -635,6 +646,7 @@ async function runEvaluate(args, storePath, tasksDir, worktreesDir, _config) {
     if (!contract) {
         return { ok: false, error: "contract_not_found", taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };
     }
+    const operatorSteer = await readOperatorSteer(tasksDir, taskId);
     const result = await runEvaluator({
         taskId,
         artifactsDir: tasksDir,
@@ -645,11 +657,15 @@ async function runEvaluate(args, storePath, tasksDir, worktreesDir, _config) {
         verdict,
         config: _config,
         allowNetwork: allowNetwork || _config?.agent_allow_network === true,
-        currentStepId: snapshot.context.currentStepId
+        currentStepId: snapshot.context.currentStepId,
+        operatorSteer: operatorSteer?.content ?? null
     });
     if (!result.ok) {
+        if (hasRoleReport(result))
+            await consumeOperatorSteer(operatorSteer);
         return { ok: false, command: "evaluate", error: result, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };
     }
+    await consumeOperatorSteer(operatorSteer);
     const eventResult = await store.appendEvent(taskId, {
         type: "EVAL_COMPLETE",
         verdict: result.report.verdict,
@@ -662,6 +678,15 @@ async function runEvaluate(args, storePath, tasksDir, worktreesDir, _config) {
     }, "evaluator");
     if (!eventResult.ok) {
         return { ok: false, command: "evaluate", error: eventResult, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir, reportPath: result.reportPath };
+    }
+    if (result.report.verdict === "FAIL") {
+        await writeNextFindings(tasksDir, taskId, {
+            command: "evaluate",
+            attempt: result.report.attempt,
+            provider: result.report.provider,
+            reportPath: result.reportPath,
+            feedback: result.report.feedback
+        });
     }
     const finalSnapshot = await store.getCurrentState(taskId);
     if (finalSnapshot) {
@@ -723,11 +748,35 @@ async function runRetry(args, storePath, tasksDir, worktreesDir, _config) {
     const steps = [];
     let state = snapshot.state;
     while (state === "BUILD" || state === "CHECK") {
+        if (await hasAgentStop(tasksDir, taskId)) {
+            const stoppedSnapshot = await store.getCurrentState(taskId);
+            await writeProgress(tasksDir, taskId, {
+                command: "run-retry",
+                state: stoppedSnapshot?.state ?? state,
+                stoppedReason: "agent_stop",
+                steps
+            });
+            return {
+                ok: true,
+                command: "run-retry",
+                taskId,
+                state: stoppedSnapshot?.state ?? state,
+                stoppedReason: "agent_stop",
+                context: stoppedSnapshot?.context ?? snapshot.context,
+                generatorProvider,
+                evaluatorProvider,
+                storePath,
+                tasksDir,
+                worktreesDir,
+                steps
+            };
+        }
         const loopSnapshot = await store.getCurrentState(taskId);
         const loopContext = loopSnapshot?.context ?? snapshot.context;
         if (state === "BUILD") {
             const events = await store.listEvents(taskId);
             const previousEvaluation = latestFailedEvaluation(events);
+            const operatorSteer = await readOperatorSteer(tasksDir, taskId);
             const attempt = events.filter((event) => event.event_type === "CODE_PRODUCED").length + 1;
             const result = await runGenerator({
                 taskId,
@@ -742,11 +791,15 @@ async function runRetry(args, storePath, tasksDir, worktreesDir, _config) {
                 allowNetwork: allowNetwork || _config?.agent_allow_network === true,
                 currentStepId: loopContext.currentStepId,
                 previousEvaluatorFeedback: previousEvaluation?.payload.feedback ?? null,
-                previousEvaluatorReportPath: previousEvaluation?.payload.report_path ?? null
+                previousEvaluatorReportPath: previousEvaluation?.payload.report_path ?? null,
+                operatorSteer: operatorSteer?.content ?? null
             });
             if (!result.ok) {
+                if (hasRoleReport(result))
+                    await consumeOperatorSteer(operatorSteer);
                 return { ok: false, command: "run-retry", error: result, taskId, state, storePath, tasksDir, worktreesDir, steps };
             }
+            await consumeOperatorSteer(operatorSteer);
             const eventResult = await store.appendEvent(taskId, { type: "CODE_PRODUCED", report_path: result.reportPath, files_changed: result.filesChanged, attempt, provider: result.report.provider, step_id: loopContext.currentStepId }, "generator");
             if (!eventResult.ok) {
                 return { ok: false, command: "run-retry", error: eventResult, taskId, state, storePath, tasksDir, worktreesDir, reportPath: result.reportPath, steps };
@@ -758,6 +811,7 @@ async function runRetry(args, storePath, tasksDir, worktreesDir, _config) {
         const events = await store.listEvents(taskId);
         const attempt = events.filter((event) => event.event_type === "EVAL_COMPLETE").length + 1;
         const latestCode = latestCodeProduced(events);
+        const operatorSteer = await readOperatorSteer(tasksDir, taskId);
         const result = await runEvaluator({
             taskId,
             artifactsDir: tasksDir,
@@ -771,11 +825,15 @@ async function runRetry(args, storePath, tasksDir, worktreesDir, _config) {
             config: _config,
             allowNetwork: allowNetwork || _config?.agent_allow_network === true,
             retryFailTimes: evaluatorProvider === "fixture" ? failTimesResult.failTimes : undefined,
-            currentStepId: loopContext.currentStepId
+            currentStepId: loopContext.currentStepId,
+            operatorSteer: operatorSteer?.content ?? null
         });
         if (!result.ok) {
+            if (hasRoleReport(result))
+                await consumeOperatorSteer(operatorSteer);
             return { ok: false, command: "run-retry", error: result, taskId, state, storePath, tasksDir, worktreesDir, steps };
         }
+        await consumeOperatorSteer(operatorSteer);
         const eventResult = await store.appendEvent(taskId, {
             type: "EVAL_COMPLETE",
             verdict: result.report.verdict,
@@ -791,6 +849,15 @@ async function runRetry(args, storePath, tasksDir, worktreesDir, _config) {
             return { ok: false, command: "run-retry", error: eventResult, taskId, state, storePath, tasksDir, worktreesDir, reportPath: result.reportPath, steps };
         }
         steps.push({ role: "evaluator", provider: result.report.provider, attempt, reportPath: result.reportPath, verdict: result.report.verdict, testsRun: result.report.testsRun, testsFailed: result.report.testsFailed, event: summarizeEvent(eventResult.event) });
+        if (result.report.verdict === "FAIL") {
+            await writeNextFindings(tasksDir, taskId, {
+                command: "run-retry",
+                attempt,
+                provider: result.report.provider,
+                reportPath: result.reportPath,
+                feedback: result.report.feedback
+            });
+        }
         if (eventResult.event.state_after === "BUILD") {
             await cleanupEvaluatorScratch(workspace.metadata.worktreePath);
         }
@@ -800,6 +867,11 @@ async function runRetry(args, storePath, tasksDir, worktreesDir, _config) {
     if (finalSnapshot) {
         await updateTask(taskId, { status: taskStatusFromState(finalSnapshot.state) }, tasksDir);
     }
+    await writeProgress(tasksDir, taskId, {
+        command: "run-retry",
+        state: finalSnapshot?.state ?? state,
+        steps
+    });
     return {
         ok: true,
         command: "run-retry",
@@ -834,16 +906,21 @@ async function runReview(args, storePath, tasksDir, _config) {
     if (!contract) {
         return { ok: false, error: "contract_not_found", taskId, state: snapshot.state, storePath, tasksDir };
     }
+    const operatorSteer = await readOperatorSteer(tasksDir, taskId);
     const result = await runReviewer({
         taskId,
         artifactsDir: tasksDir,
         contract: contract.content,
         adapter,
-        verdict
+        verdict,
+        operatorSteer: operatorSteer?.content ?? null
     });
     if (!result.ok) {
+        if (hasRoleReport(result))
+            await consumeOperatorSteer(operatorSteer);
         return { ok: false, command: "review", error: result, taskId, state: snapshot.state, storePath, tasksDir };
     }
+    await consumeOperatorSteer(operatorSteer);
     const eventResult = await store.appendEvent(taskId, { type: "REVIEW_COMPLETE", verdict: result.report.verdict, feedback: result.report.feedback, report_path: result.reportPath }, "reviewer");
     if (!eventResult.ok) {
         return { ok: false, command: "review", error: eventResult, taskId, state: snapshot.state, storePath, tasksDir, reportPath: result.reportPath };
@@ -1134,6 +1211,12 @@ async function runWaitResult(taskId, state, stoppedReason, steps, storePath, tas
     const contract = await readContractArtifact(tasksDir, taskId);
     const store = createFileRunStore(storePath);
     const snapshot = await store.getCurrentState(taskId);
+    await writeProgress(tasksDir, taskId, {
+        command: "run-wait",
+        state,
+        stoppedReason,
+        steps
+    });
     return {
         ok: true,
         command: "run-wait",
@@ -1160,6 +1243,78 @@ function latestFailedEvaluation(events) {
 function latestRevisionReview(events) {
     const reviewEvents = events.filter((event) => event.payload.type === "REVIEW_COMPLETE" && event.payload.verdict === "NEEDS_REVISION");
     return reviewEvents[reviewEvents.length - 1] ?? null;
+}
+async function hasAgentStop(tasksDir, taskId) {
+    try {
+        await readFile(path.join(tasksDir, taskId, "AGENT_STOP"), "utf8");
+        return true;
+    }
+    catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT")
+            return false;
+        throw error;
+    }
+}
+async function readOperatorSteer(tasksDir, taskId) {
+    const steerPath = path.join(tasksDir, taskId, "STEER.md");
+    try {
+        return {
+            path: steerPath,
+            content: await readFile(steerPath, "utf8")
+        };
+    }
+    catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT")
+            return null;
+        throw error;
+    }
+}
+async function consumeOperatorSteer(steer) {
+    if (!steer)
+        return;
+    await rename(steer.path, `${steer.path}.consumed`).catch(async (error) => {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT")
+            return;
+        throw error;
+    });
+}
+function hasRoleReport(result) {
+    return typeof result === "object" && result !== null && "report" in result;
+}
+async function writeProgress(tasksDir, taskId, input) {
+    const artifactDir = path.join(tasksDir, taskId);
+    await mkdir(artifactDir, { recursive: true });
+    const lines = [
+        "# Anchor Progress",
+        "",
+        `taskId: ${taskId}`,
+        `command: ${input.command}`,
+        `state: ${input.state ?? "null"}`,
+        `stoppedReason: ${input.stoppedReason ?? ""}`,
+        `updatedAt: ${new Date().toISOString()}`,
+        "",
+        "steps:",
+        ...input.steps.map((step, index) => `- ${index + 1}: ${JSON.stringify(step)}`),
+        ""
+    ];
+    await writeFile(path.join(artifactDir, "PROGRESS.md"), lines.join("\n"));
+}
+async function writeNextFindings(tasksDir, taskId, input) {
+    const artifactDir = path.join(tasksDir, taskId);
+    await mkdir(artifactDir, { recursive: true });
+    const lines = [
+        "# Next Findings",
+        "",
+        `taskId: ${taskId}`,
+        `command: ${input.command}`,
+        `attempt: ${input.attempt ?? ""}`,
+        `provider: ${input.provider ?? ""}`,
+        `reportPath: ${input.reportPath ?? ""}`,
+        "",
+        input.feedback,
+        ""
+    ];
+    await writeFile(path.join(artifactDir, "NEXT_FINDINGS.md"), lines.join("\n"));
 }
 async function cleanupEvaluatorScratch(worktreePath) {
     await rm(path.join(worktreePath, ".anchor", "eval"), { recursive: true, force: true });

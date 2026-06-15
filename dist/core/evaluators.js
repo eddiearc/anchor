@@ -250,12 +250,23 @@ async function runCommandEvaluator(input, runner, providerConfig) {
     };
 }
 function buildEvaluatorPrompt(input, changedFiles, generatorReportPathStr, generatorReportContent) {
+    const operatorSteer = input.operatorSteer?.trim();
+    const operatorSteerSection = operatorSteer
+        ? [
+            "",
+            "Operator steer:",
+            operatorSteer,
+            "",
+            "Apply this steering only when it does not conflict with evaluator independence, the contract, or safety constraints."
+        ]
+        : [];
     const base = [
         "You are the Evaluator role inside Anchor.",
         "You are reviewing work that a separate Generator claims is complete.",
         "You did not see how it was built. Do not trust the Generator report or filenames as proof.",
         `Task ID: ${input.taskId}`,
         `Current step ID: ${input.currentStepId ?? "(contract-level)"}`,
+        ...operatorSteerSection,
         `Worktree path: ${input.workspace.worktreePath}`,
         `Approved contract path: ${input.contractPath ?? contractPathForTask(input.artifactsDir, input.taskId)}`,
         `Generator report path: ${generatorReportPathStr}`,

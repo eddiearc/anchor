@@ -798,6 +798,15 @@ Workspace audit events are active-state no-ops: `WORKSPACE_CREATED(system)` and 
 
 There is no provider call, evaluator adapter, retry loop, or real sandbox in R6. The worktree only prepares an isolated git workspace for Generator adapters.
 
+### Handoff and Operator Controls
+
+Long-running loops write handoff artifacts under `.anchor/tasks/<taskId>/`:
+
+- `PROGRESS.md`: latest `run-wait` or `run-retry` state, stop reason, and executed steps.
+- `NEXT_FINDINGS.md`: latest evaluator FAIL feedback for the next Generator run.
+- `AGENT_STOP`: when present, `run-wait` and `run-retry` stop before the next agent-owned action and leave state unchanged.
+- `STEER.md`: operator steering surfaced once to the next Planner, Reviewer, Generator, or Evaluator prompt. After it is read, Anchor renames it to `STEER.md.consumed`.
+
 ### Generator Adapter
 
 R7 adds a deterministic local fixture adapter:

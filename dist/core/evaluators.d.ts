@@ -57,6 +57,7 @@ export type RunEvaluatorInput = {
     allowNetwork?: boolean;
     retryFailTimes?: number;
     currentStepId?: string | null;
+    operatorSteer?: string | null;
 };
 export declare function runEvaluator(input: RunEvaluatorInput, runner?: CommandRunner): Promise<EvaluatorOk | EvaluatorError>;
 export declare function validateEvaluatorProvider(providerId: string, runner?: CommandRunner): {

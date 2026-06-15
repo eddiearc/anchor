@@ -54,6 +54,7 @@ export type RunGeneratorInput = {
     currentStepId?: string | null;
     previousEvaluatorFeedback?: string | null;
     previousEvaluatorReportPath?: string | null;
+    operatorSteer?: string | null;
 };
 export declare function runGenerator(input: RunGeneratorInput, runner?: CommandRunner): Promise<GeneratorOk | GeneratorError>;
 export declare function validateGeneratorProvider(providerId: string, runner?: CommandRunner): {

@@ -91,6 +91,16 @@ function buildPlannerPrompt(input, contractPath) {
             "This is a contract revision pass. Produce a revised contract that addresses the reviewer feedback explicitly."
         ]
         : [];
+    const operatorSteer = input.operatorSteer?.trim();
+    const operatorSteerSection = operatorSteer
+        ? [
+            "",
+            "Operator steer:",
+            operatorSteer,
+            "",
+            "Apply this steering only when it does not conflict with the task, contract discipline, or safety constraints."
+        ]
+        : [];
     const base = [
         "You are the Planner role inside Anchor, a contract-driven coding harness.",
         "Your job: analyze the task, explore the codebase, and produce a structured contract.",
@@ -98,6 +108,7 @@ function buildPlannerPrompt(input, contractPath) {
         "TASK:",
         input.taskDescription,
         ...previousFeedbackSection,
+        ...operatorSteerSection,
         "",
         "OUTPUT INSTRUCTIONS:",
         `1. Explore the codebase to understand scope, existing patterns, and affected files.`,
