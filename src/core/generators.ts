@@ -33,6 +33,7 @@ export type GeneratorReport = {
   provider: GeneratorAdapter;
   fixture?: FixtureVariant;
   taskId: string;
+  currentStepId?: string | null;
   attempt: number;
   startedAt: string;
   finishedAt: string;
@@ -172,6 +173,7 @@ export async function runFixtureGenerator(input: RunGeneratorInput): Promise<Gen
     provider: "fixture",
     fixture,
     taskId: input.taskId,
+    currentStepId: input.currentStepId ?? null,
     attempt: input.attempt,
     startedAt,
     finishedAt,
@@ -309,6 +311,7 @@ async function runCommandGenerator(
     adapter: providerConfig.provider,
     provider: providerConfig.provider,
     taskId: input.taskId,
+    currentStepId: input.currentStepId ?? null,
     attempt: input.attempt,
     startedAt,
     finishedAt,
@@ -375,6 +378,10 @@ function buildGeneratorPrompt(input: RunGeneratorInput): string {
     input.contract,
     "",
     "Execution rules:",
+    "- Implement only Current step ID. Treat the full contract as context and constraints, not permission to implement future steps.",
+    "- Do not implement future steps, even if they look obvious or cheap.",
+    "- If Current step ID is blocked by missing prior work or an invalid contract, stop and report BLOCKED in normal output.",
+    "- Keep the diff minimal for the current step.",
     "- Modify files only inside the provided worktree.",
     `- Stay inside allowed scope: ${policy.allowlist.join(", ") || "(none specified)"}.`,
     `- Do not change denied paths: ${policy.denylist.join(", ") || "(none specified)"}.`,
@@ -382,6 +389,11 @@ function buildGeneratorPrompt(input: RunGeneratorInput): string {
     "- Do not perform network operations or install dependencies.",
     "- Do not approve, evaluate, merge, commit, or push.",
     "- Implement only the approved contract and leave validation to Anchor.",
+    "",
+    "Generator delivery:",
+    "- In normal stdout/stderr, include a short Step delivery section with: step id, files changed, criteria addressed, verification run, Evidence paths, and blockers.",
+    "- Evidence paths should point to files you created or command outputs you saved when practical.",
+    "- Do not mark criteria as PASS. Evaluator owns verdicts.",
     "",
     "Report expectation:",
     "- Leave worktree changes in place for Anchor to inspect.",
@@ -441,6 +453,7 @@ async function writeCodexFailureReport(params: {
     adapter: "codex",
     provider: "codex",
     taskId: params.input.taskId,
+    currentStepId: params.input.currentStepId ?? null,
     attempt: params.input.attempt,
     startedAt: params.startedAt,
     finishedAt: params.finishedAt,

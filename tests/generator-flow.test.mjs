@@ -79,6 +79,7 @@ test("codex generator runs fake command in worktree, writes report, and advances
     "#!/bin/sh",
     "last=''",
     "for arg in \"$@\"; do last=\"$arg\"; done",
+    "case \"$last\" in *\"Implement only Current step ID\"*\"Do not implement future steps\"*\"Generator delivery\"*\"Evidence paths\"*) ;; *) echo missing-step-delivery-rules >&2; exit 3 ;; esac",
     "case \"$last\" in *\"Approved contract path:\"*\"Approved contract:\"*\"Report expectation:\"*) ;; *) echo missing-prompt-boundary >&2; exit 3 ;; esac",
     "if [ -n \"$ANCHOR_CODEX_COMMAND\" ]; then echo leaked-anchor-env >&2; exit 4; fi",
     "mkdir -p \"$PWD/anchor-output\" 2>/dev/null || true",
@@ -100,6 +101,7 @@ test("codex generator runs fake command in worktree, writes report, and advances
     assert.equal(report.adapter, "codex");
     assert.equal(report.provider, "codex");
     assert.equal(report.taskId, taskId);
+    assert.equal(report.currentStepId, "1");
     assert.equal(report.exitCode, 0);
     assert.ok(report.filesChanged.some((file) => file.startsWith("anchor-output/")));
     assert.equal(report.argv.at(-1), "[prompt redacted]");
@@ -217,6 +219,7 @@ test("pi generator runs fake command in worktree, writes report, and advances BU
     "#!/bin/sh",
     "last=''",
     "for arg in \"$@\"; do last=\"$arg\"; done",
+    "case \"$last\" in *\"Implement only Current step ID\"*\"Do not implement future steps\"*\"Generator delivery\"*\"Evidence paths\"*) ;; *) echo missing-step-delivery-rules >&2; exit 3 ;; esac",
     "case \"$last\" in *\"Task ID:\"*\"Approved contract path:\"*\"Approved contract:\"*\"Report expectation:\"*) ;; *) echo missing-prompt-boundary >&2; exit 3 ;; esac",
     "if [ -n \"$ANCHOR_PI_COMMAND\" ] || [ -n \"$ANCHOR_PI_ARGV_JSON\" ] || [ -n \"$SECRET_TOKEN\" ]; then echo leaked-env >&2; exit 4; fi",
     "mkdir -p \"$PWD/anchor-output\" 2>/dev/null || true",

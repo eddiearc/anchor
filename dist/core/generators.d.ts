@@ -9,6 +9,7 @@ export type GeneratorReport = {
     provider: GeneratorAdapter;
     fixture?: FixtureVariant;
     taskId: string;
+    currentStepId?: string | null;
     attempt: number;
     startedAt: string;
     finishedAt: string;
