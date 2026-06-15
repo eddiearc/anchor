@@ -21,6 +21,7 @@ async function readDefaultConfigContent() {
             "# ~/.anchor/config.yaml",
             "",
             "agent: codex",
+            "provider: codex",
             "",
             "prompt: |",
             "  I am a full-stack TypeScript engineer inside Anchor, a contract-driven",
@@ -165,6 +166,11 @@ function parseConfig(raw) {
     }
     return {
         agent: config.agent,
+        provider: config.provider,
+        planner_provider: config.planner_provider,
+        reviewer_provider: config.reviewer_provider,
+        generator_provider: config.generator_provider,
+        evaluator_provider: config.evaluator_provider,
         prompt: config.prompt,
         planner_prompt: config.planner_prompt,
         reviewer_prompt: config.reviewer_prompt,

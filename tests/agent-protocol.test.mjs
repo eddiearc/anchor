@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -14,6 +14,9 @@ async function tempDir(prefix = "anchor-agent-protocol-") {
 }
 
 async function runCliJson(args, cwd) {
+  const configPath = path.join(cwd, ".test-anchor-home", "config.yaml");
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, "provider: fixture\n");
   try {
     const { stdout } = await execFileAsync(process.execPath, [cliPath, ...args], {
       cwd,
@@ -22,7 +25,7 @@ async function runCliJson(args, cwd) {
       env: {
         ...process.env,
         HOME: path.join(cwd, ".test-home"),
-        ANCHOR_CONFIG_PATH: path.join(cwd, ".test-anchor-home", "config.yaml")
+        ANCHOR_CONFIG_PATH: configPath
       }
     });
     return { exitCode: 0, json: JSON.parse(stdout) };
@@ -52,7 +55,8 @@ test("agent protocol exposes structured nextActions for HUMAN BUILD CHECK and DO
     "create_workspace"
   ]);
   assert.deepEqual(run.json.nextActions[0].command, ["anchor", "contract", "TASK-001"]);
-  assert.equal(run.json.artifacts.contractPath, ".anchor/tasks/TASK-001/contract.yaml");
+  const repoRoot = await realpath(repo);
+  assert.equal(run.json.artifacts.contractPath, path.join(repoRoot, ".anchor", "tasks", "TASK-001", "contract.yaml"));
 
   const humanNext = await runCliJson(["next", "TASK-001"], repo);
   assert.equal(humanNext.exitCode, 0);
@@ -75,7 +79,7 @@ test("agent protocol exposes structured nextActions for HUMAN BUILD CHECK and DO
   assert.equal(generate.json.state, "CHECK");
   const checkNext = await runCliJson(["next", "TASK-001"], repo);
   assert.deepEqual(checkNext.json.nextActions.map((action) => action.action), ["evaluate"]);
-  assert.deepEqual(checkNext.json.nextActions[0].command, ["anchor", "evaluate", "TASK-001", "--adapter", "fixture", "--verdict", "pass"]);
+  assert.deepEqual(checkNext.json.nextActions[0].command, ["anchor", "evaluate", "TASK-001", "--provider", "fixture", "--verdict", "pass"]);
 
   const evaluate = await runCliJson(["evaluate", "TASK-001", "--adapter", "fixture", "--verdict", "pass"], repo);
   assert.equal(evaluate.exitCode, 0);

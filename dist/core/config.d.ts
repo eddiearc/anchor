@@ -1,6 +1,11 @@
 export type AnchorAgent = "codex" | string;
 export type AnchorConfig = {
     agent?: AnchorAgent;
+    provider?: string;
+    planner_provider?: string;
+    reviewer_provider?: string;
+    generator_provider?: string;
+    evaluator_provider?: string;
     prompt?: string;
     planner_prompt?: string;
     reviewer_prompt?: string;

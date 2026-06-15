@@ -65,7 +65,7 @@ anchor events "$TASK_ID"
 - `--generator-provider <id>` selects the generator provider.
 - `--evaluator-provider <id>` selects the evaluator provider.
 - `--provider <id>` or `--adapter <id>` selects the same provider for both roles.
-- Defaults are `fixture` for both roles.
+- Defaults come from `provider`, `generator_provider`, and `evaluator_provider` in Anchor config.
 
 Successful output includes `generatorProvider`, `evaluatorProvider`, and `steps[]`. Each step includes `role`, `provider`, `attempt`, `reportPath`, and the appended event summary. Unknown providers return structured `UNKNOWN_PROVIDER` errors before attempts are created.
 

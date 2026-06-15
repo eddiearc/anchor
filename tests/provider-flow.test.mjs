@@ -15,7 +15,7 @@ async function tempDir(prefix = "anchor-provider-") {
 }
 
 async function runJson(args, paths) {
-  const result = await runCli(args, paths);
+  const result = await runCli(args, { config: { provider: "fixture" }, ...paths });
   return { exitCode: result.exitCode, json: JSON.parse(result.output) };
 }
 

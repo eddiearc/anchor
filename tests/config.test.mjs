@@ -107,6 +107,8 @@ test("loadAnchorConfig parses single-line values", async () => {
   const configPath = path.join(dir, "config.yaml");
   await writeFile(configPath, [
     "agent: codex",
+    "provider: codex",
+    "generator_provider: pi",
     "agent_retry_max: 5",
     "agent_retry_backoff_ms: 2000",
     ""
@@ -118,6 +120,8 @@ test("loadAnchorConfig parses single-line values", async () => {
   try {
     const config = await loadAnchorConfig();
     assert.equal(config.agent, "codex");
+    assert.equal(config.provider, "codex");
+    assert.equal(config.generator_provider, "pi");
     assert.equal(config.agent_retry_max, 5);
     assert.equal(config.agent_retry_backoff_ms, 2000);
   } finally {
@@ -295,6 +299,7 @@ test("loadAnchorConfig merges defaults, global config, repo config, and explicit
   await execFileAsync("git", ["init"], { cwd: repo, encoding: "utf8" });
   await writeFile(path.join(dir, ".anchor", "config.yaml"), [
     "agent: global-agent",
+    "provider: global-provider",
     "planner_prompt: global planner",
     "generator_prompt: global generator",
     "agent_retry_max: 2",
@@ -302,6 +307,7 @@ test("loadAnchorConfig merges defaults, global config, repo config, and explicit
   ].join("\n"));
   await writeFile(path.join(repoAnchor, "config.yaml"), [
     "agent: repo-agent",
+    "generator_provider: repo-generator-provider",
     "generator_prompt: repo generator",
     "evaluator_prompt: repo evaluator",
     ""
@@ -319,6 +325,8 @@ test("loadAnchorConfig merges defaults, global config, repo config, and explicit
   try {
     const config = await loadAnchorConfig();
     assert.equal(config.agent, "repo-agent");
+    assert.equal(config.provider, "global-provider");
+    assert.equal(config.generator_provider, "repo-generator-provider");
     assert.equal(config.planner_prompt, "global planner");
     assert.equal(config.generator_prompt, "repo generator");
     assert.equal(config.evaluator_prompt, "explicit evaluator");

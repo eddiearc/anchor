@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -24,6 +24,9 @@ async function exists(filePath) {
 }
 
 async function runJson(args, cwd) {
+  const configPath = path.join(cwd, ".test-anchor-home", "config.yaml");
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, "provider: fixture\n");
   try {
     const { stdout } = await execFileAsync(process.execPath, [cliPath, ...args], {
       cwd,
@@ -32,7 +35,7 @@ async function runJson(args, cwd) {
       env: {
         ...process.env,
         HOME: path.join(cwd, ".test-home"),
-        ANCHOR_CONFIG_PATH: path.join(cwd, ".test-anchor-home", "config.yaml")
+        ANCHOR_CONFIG_PATH: configPath
       }
     });
     return { ...JSON.parse(stdout), exitCode: 0 };
@@ -47,21 +50,22 @@ async function runJson(args, cwd) {
 test("anchor run and next guide the quickstart path without generating code", async () => {
   const repo = await tempDir();
   await execFileAsync("git", ["init"], { cwd: repo, encoding: "utf8" });
+  const repoRoot = await realpath(repo);
 
   const run = await runJson(["run", "test task"], repo);
   assert.equal(run.ok, true);
   assert.equal(run.command, "run");
   assert.equal(run.state, "HUMAN");
   assert.equal(run.taskId, "TASK-001");
-  assert.equal(run.contractPath, path.join(".anchor", "tasks", "TASK-001", "contract.yaml"));
+  assert.equal(run.contractPath, path.join(repoRoot, ".anchor", "tasks", "TASK-001", "contract.yaml"));
   assert.deepEqual(run.nextCommands, [
     "anchor contract TASK-001",
     "anchor approve TASK-001",
     "anchor workspace create TASK-001"
   ]);
-  assert.equal(await exists(path.join(repo, run.contractPath)), true);
-  assert.equal(await exists(path.join(repo, ".anchor", "events.jsonl")), true);
-  assert.equal(await exists(path.join(repo, ".anchor", "config.yaml")), false);
+  assert.equal(await exists(run.contractPath), true);
+  assert.equal(await exists(path.join(repoRoot, ".anchor", "events.jsonl")), true);
+  assert.equal(await exists(path.join(repoRoot, ".anchor", "config.yaml")), false);
 
   const humanNext = await runJson(["next", run.taskId], repo);
   assert.equal(humanNext.ok, true);
@@ -87,7 +91,7 @@ test("anchor run and next guide the quickstart path without generating code", as
   assert.equal(buildNext.state, "BUILD");
   assert.deepEqual(buildNext.nextCommands, [
     "anchor workspace create TASK-001",
-    "anchor generate TASK-001 --adapter fixture"
+    "anchor generate TASK-001 --provider fixture"
   ]);
 
   const { createFileRunStore } = await import("../dist/index.js");
@@ -100,7 +104,7 @@ test("anchor run and next guide the quickstart path without generating code", as
   assert.equal(produced.ok, true);
   const checkNext = await runJson(["next", run.taskId], repo);
   assert.equal(checkNext.state, "CHECK");
-  assert.deepEqual(checkNext.nextCommands, ["anchor evaluate TASK-001 --adapter fixture --verdict pass"]);
+  assert.deepEqual(checkNext.nextCommands, ["anchor evaluate TASK-001 --provider fixture --verdict pass"]);
 
   const evaluated = await store.appendEvent(run.taskId, { type: "EVAL_COMPLETE", verdict: "PASS" }, "evaluator");
   assert.equal(evaluated.ok, true);
@@ -108,6 +112,31 @@ test("anchor run and next guide the quickstart path without generating code", as
   assert.equal(doneNext.state, "DONE");
   assert.deepEqual(doneNext.nextCommands, []);
   assert.equal(doneNext.message, "Task is complete.");
+});
+
+test("anchor run requires a git repository", async () => {
+  const dir = await tempDir();
+
+  const result = await runJson(["run", "test task"], dir);
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, "not_git_repo");
+  assert.match(result.message, /git repository/);
+});
+
+test("anchor run from a subdirectory uses the git root .anchor directory", async () => {
+  const repo = await tempDir();
+  const subdir = path.join(repo, "packages", "app");
+  await execFileAsync("git", ["init"], { cwd: repo, encoding: "utf8" });
+  await mkdir(subdir, { recursive: true });
+  const repoRoot = await realpath(repo);
+
+  const run = await runJson(["run", "test task"], subdir);
+  assert.equal(run.ok, true);
+  assert.equal(run.storePath, path.join(repoRoot, ".anchor", "events.jsonl"));
+  assert.equal(run.tasksDir, path.join(repoRoot, ".anchor", "tasks"));
+  assert.equal(await exists(run.contractPath), true);
+  assert.equal(await exists(path.join(subdir, ".anchor")), false);
 });
 
 test("anchor next reports a clear error for unknown tasks", async () => {

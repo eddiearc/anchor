@@ -12,12 +12,12 @@ async function tempDir(prefix = "anchor-eval-") {
 }
 
 async function runJson(args, paths) {
-  const result = await runCli(args, paths);
+  const result = await runCli(args, { config: { provider: "fixture" }, ...paths });
   return JSON.parse(result.output);
 }
 
 async function runJsonWithExit(args, paths) {
-  const result = await runCli(args, paths);
+  const result = await runCli(args, { config: { provider: "fixture" }, ...paths });
   return { exitCode: result.exitCode, json: JSON.parse(result.output) };
 }
 
