@@ -82,6 +82,8 @@ export async function runFixtureGenerator(input) {
         fixture,
         taskId: input.taskId,
         currentStepId: input.currentStepId ?? null,
+        previousEvaluatorFeedback: input.previousEvaluatorFeedback ?? null,
+        previousEvaluatorReportPath: input.previousEvaluatorReportPath ?? null,
         attempt: input.attempt,
         startedAt,
         finishedAt,
@@ -189,6 +191,8 @@ async function runCommandGenerator(input, runner, providerConfig) {
         provider: providerConfig.provider,
         taskId: input.taskId,
         currentStepId: input.currentStepId ?? null,
+        previousEvaluatorFeedback: input.previousEvaluatorFeedback ?? null,
+        previousEvaluatorReportPath: input.previousEvaluatorReportPath ?? null,
         attempt: input.attempt,
         startedAt,
         finishedAt,
@@ -239,6 +243,17 @@ async function runCommandGenerator(input, runner, providerConfig) {
 }
 function buildGeneratorPrompt(input) {
     const policy = readContractPolicy(input.contract);
+    const previousFindings = input.previousEvaluatorFeedback?.trim();
+    const previousFindingsSection = previousFindings
+        ? [
+            "",
+            "Previous evaluator findings:",
+            `Report path: ${input.previousEvaluatorReportPath ?? "(not recorded)"}`,
+            previousFindings,
+            "",
+            "Before doing any other work, address these findings in the current step and include how you addressed them in the Step delivery section."
+        ]
+        : [];
     const base = [
         "You are the Generator role inside Anchor.",
         `Task ID: ${input.taskId}`,
@@ -248,6 +263,7 @@ function buildGeneratorPrompt(input) {
         "",
         "Approved contract:",
         input.contract,
+        ...previousFindingsSection,
         "",
         "Execution rules:",
         "- Implement only Current step ID. Treat the full contract as context and constraints, not permission to implement future steps.",
@@ -264,6 +280,7 @@ function buildGeneratorPrompt(input) {
         "",
         "Generator delivery:",
         "- In normal stdout/stderr, include a short Step delivery section with: step id, files changed, criteria addressed, verification run, Evidence paths, and blockers.",
+        "- If Previous evaluator findings are present, include a Previous findings addressed item for each finding.",
         "- Evidence paths should point to files you created or command outputs you saved when practical.",
         "- Do not mark criteria as PASS. Evaluator owns verdicts.",
         "",
@@ -314,6 +331,8 @@ async function writeCodexFailureReport(params) {
         provider: "codex",
         taskId: params.input.taskId,
         currentStepId: params.input.currentStepId ?? null,
+        previousEvaluatorFeedback: params.input.previousEvaluatorFeedback ?? null,
+        previousEvaluatorReportPath: params.input.previousEvaluatorReportPath ?? null,
         attempt: params.input.attempt,
         startedAt: params.startedAt,
         finishedAt: params.finishedAt,

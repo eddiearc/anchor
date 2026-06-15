@@ -564,6 +564,7 @@ async function runGenerate(args, storePath, tasksDir, worktreesDir, _config) {
         return { ok: false, error: "contract_not_found", taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };
     }
     const events = await store.listEvents(taskId);
+    const previousEvaluation = latestFailedEvaluation(events);
     const attempt = events.filter((event) => event.event_type === "CODE_PRODUCED").length + 1;
     const result = await runGenerator({
         taskId,
@@ -576,7 +577,9 @@ async function runGenerate(args, storePath, tasksDir, worktreesDir, _config) {
         attempt,
         config: _config,
         allowNetwork: allowNetwork || _config?.agent_allow_network === true,
-        currentStepId: snapshot.context.currentStepId
+        currentStepId: snapshot.context.currentStepId,
+        previousEvaluatorFeedback: previousEvaluation?.payload.feedback ?? null,
+        previousEvaluatorReportPath: previousEvaluation?.payload.report_path ?? null
     });
     if (!result.ok) {
         return { ok: false, command: "generate", error: result, taskId, state: snapshot.state, storePath, tasksDir, worktreesDir };
@@ -721,6 +724,7 @@ async function runRetry(args, storePath, tasksDir, worktreesDir, _config) {
         const loopContext = loopSnapshot?.context ?? snapshot.context;
         if (state === "BUILD") {
             const events = await store.listEvents(taskId);
+            const previousEvaluation = latestFailedEvaluation(events);
             const attempt = events.filter((event) => event.event_type === "CODE_PRODUCED").length + 1;
             const result = await runGenerator({
                 taskId,
@@ -733,7 +737,9 @@ async function runRetry(args, storePath, tasksDir, worktreesDir, _config) {
                 reportPath: generatorAttemptReportPath(tasksDir, taskId, attempt),
                 config: _config,
                 allowNetwork: allowNetwork || _config?.agent_allow_network === true,
-                currentStepId: loopContext.currentStepId
+                currentStepId: loopContext.currentStepId,
+                previousEvaluatorFeedback: previousEvaluation?.payload.feedback ?? null,
+                previousEvaluatorReportPath: previousEvaluation?.payload.report_path ?? null
             });
             if (!result.ok) {
                 return { ok: false, command: "run-retry", error: result, taskId, state, storePath, tasksDir, worktreesDir, steps };
@@ -1143,6 +1149,10 @@ async function runWaitResult(taskId, state, stoppedReason, steps, storePath, tas
 function latestCodeProduced(events) {
     const codeEvents = events.filter((event) => event.event_type === "CODE_PRODUCED");
     return codeEvents[codeEvents.length - 1] ?? null;
+}
+function latestFailedEvaluation(events) {
+    const evalEvents = events.filter((event) => event.payload.type === "EVAL_COMPLETE" && event.payload.verdict === "FAIL");
+    return evalEvents[evalEvents.length - 1] ?? null;
 }
 async function cleanupEvaluatorScratch(worktreePath) {
     await rm(path.join(worktreePath, ".anchor", "eval"), { recursive: true, force: true });

@@ -10,6 +10,8 @@ export type GeneratorReport = {
     fixture?: FixtureVariant;
     taskId: string;
     currentStepId?: string | null;
+    previousEvaluatorFeedback?: string | null;
+    previousEvaluatorReportPath?: string | null;
     attempt: number;
     startedAt: string;
     finishedAt: string;
@@ -50,6 +52,8 @@ export type RunGeneratorInput = {
     config?: AnchorConfig;
     allowNetwork?: boolean;
     currentStepId?: string | null;
+    previousEvaluatorFeedback?: string | null;
+    previousEvaluatorReportPath?: string | null;
 };
 export declare function runGenerator(input: RunGeneratorInput, runner?: CommandRunner): Promise<GeneratorOk | GeneratorError>;
 export declare function validateGeneratorProvider(providerId: string, runner?: CommandRunner): {

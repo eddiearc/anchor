@@ -722,6 +722,7 @@ async function runGenerate(args: string[], storePath: string, tasksDir: string, 
   }
 
   const events = await store.listEvents(taskId);
+  const previousEvaluation = latestFailedEvaluation(events);
   const attempt = events.filter((event) => event.event_type === "CODE_PRODUCED").length + 1;
   const result = await runGenerator({
     taskId,
@@ -734,7 +735,9 @@ async function runGenerate(args: string[], storePath: string, tasksDir: string, 
     attempt,
     config: _config,
     allowNetwork: allowNetwork || _config?.agent_allow_network === true,
-    currentStepId: snapshot.context.currentStepId
+    currentStepId: snapshot.context.currentStepId,
+    previousEvaluatorFeedback: previousEvaluation?.payload.feedback ?? null,
+    previousEvaluatorReportPath: previousEvaluation?.payload.report_path ?? null
   });
 
   if (!result.ok) {
@@ -913,6 +916,7 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
     const loopContext = loopSnapshot?.context ?? snapshot.context;
     if (state === "BUILD") {
       const events = await store.listEvents(taskId);
+      const previousEvaluation = latestFailedEvaluation(events);
       const attempt = events.filter((event) => event.event_type === "CODE_PRODUCED").length + 1;
       const result = await runGenerator({
         taskId,
@@ -925,7 +929,9 @@ async function runRetry(args: string[], storePath: string, tasksDir: string, wor
         reportPath: generatorAttemptReportPath(tasksDir, taskId, attempt),
         config: _config,
         allowNetwork: allowNetwork || _config?.agent_allow_network === true,
-        currentStepId: loopContext.currentStepId
+        currentStepId: loopContext.currentStepId,
+        previousEvaluatorFeedback: previousEvaluation?.payload.feedback ?? null,
+        previousEvaluatorReportPath: previousEvaluation?.payload.report_path ?? null
       });
       if (!result.ok) {
         return { ok: false, command: "run-retry", error: result, taskId, state, storePath, tasksDir, worktreesDir, steps };
@@ -1437,6 +1443,14 @@ function latestCodeProduced(events: StoredEvent[]) {
     (event): event is StoredEvent & { payload: Extract<Event, { type: "CODE_PRODUCED" }> } => event.event_type === "CODE_PRODUCED"
   );
   return codeEvents[codeEvents.length - 1] ?? null;
+}
+
+function latestFailedEvaluation(events: StoredEvent[]) {
+  const evalEvents = events.filter(
+    (event): event is StoredEvent & { payload: Extract<Event, { type: "EVAL_COMPLETE" }> } =>
+      event.payload.type === "EVAL_COMPLETE" && event.payload.verdict === "FAIL"
+  );
+  return evalEvents[evalEvents.length - 1] ?? null;
 }
 
 async function cleanupEvaluatorScratch(worktreePath: string) {

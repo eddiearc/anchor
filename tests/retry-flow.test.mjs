@@ -225,6 +225,82 @@ test("run-retry can use fake pi evaluator provider to drive FAIL then PASS trans
   }
 });
 
+test("run-retry passes evaluator FAIL feedback into the next generator prompt", async () => {
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
+
+  const { taskId, storePath } = await planApproveWorkspace(dir, tasksDir, worktreesDir);
+  const fakeCodex = path.join(dir, "fake-codex-feedback-generator.sh");
+  const generatorCountFile = path.join(dir, "generator-count");
+  await writeFile(fakeCodex, [
+    "#!/bin/sh",
+    "last=''",
+    "for arg in \"$@\"; do last=\"$arg\"; done",
+    `count_file="${generatorCountFile}"`,
+    "count=0",
+    "if [ -f \"$count_file\" ]; then count=$(cat \"$count_file\"); fi",
+    "count=$((count + 1))",
+    "echo \"$count\" > \"$count_file\"",
+    "if [ \"$count\" -eq 2 ]; then",
+    "  case \"$last\" in *\"Previous evaluator findings:\"*\"fake pi requested retry\"*) ;; *) echo missing-previous-feedback >&2; exit 3 ;; esac",
+    "  echo \"Previous findings addressed: fake pi requested retry\"",
+    "fi",
+    "mkdir -p \"$PWD/anchor-output\"",
+    `echo "fake codex retry output $count" > "$PWD/anchor-output/codex-feedback-${taskId}-$count.txt"`
+  ].join("\n"));
+  await chmod(fakeCodex, 0o755);
+
+  const fakePi = path.join(dir, "fake-pi-feedback-evaluator.sh");
+  const piCountFile = path.join(dir, "pi-eval-count");
+  await writeFile(fakePi, [
+    "#!/bin/sh",
+    `count_file="${piCountFile}"`,
+    "count=0",
+    "if [ -f \"$count_file\" ]; then count=$(cat \"$count_file\"); fi",
+    "count=$((count + 1))",
+    "echo \"$count\" > \"$count_file\"",
+    "mkdir -p \"$PWD/.anchor/eval\"",
+    "if [ \"$count\" -eq 1 ]; then",
+    "  printf '%s\\n' '{\"verdict\":\"FAIL\",\"feedback\":\"- fake pi requested retry\",\"testsRun\":2,\"testsFailed\":1}' > \"$PWD/.anchor/eval/verdict.json\"",
+    "else",
+    "  mkdir -p \"$PWD/.anchor/eval/tests\"",
+    "  echo evidence > \"$PWD/.anchor/eval/tests/pi-feedback-evidence.txt\"",
+    "  printf '%s\\n' '{\"verdict\":\"PASS\",\"feedback\":\"fake pi accepted retry\",\"testsRun\":3,\"testsFailed\":0,\"criteriaResults\":[{\"id\":\"1.1\",\"passes\":true,\"evidence\":[\".anchor/eval/tests/pi-feedback-evidence.txt\"]},{\"id\":\"1.2\",\"passes\":true,\"evidence\":[\".anchor/eval/tests/pi-feedback-evidence.txt\"]}]}' > \"$PWD/.anchor/eval/verdict.json\"",
+    "fi"
+  ].join("\n"));
+  await chmod(fakePi, 0o755);
+
+  process.env.ANCHOR_CODEX_COMMAND = fakeCodex;
+  process.env.ANCHOR_CODEX_ARGV_JSON = JSON.stringify(["fake-exec"]);
+  process.env.ANCHOR_PI_COMMAND = fakePi;
+  process.env.ANCHOR_PI_ARGV_JSON = JSON.stringify(["fake-exec"]);
+  try {
+    const retry = await runJson([
+      "run-retry",
+      taskId,
+      "--generator-provider",
+      "codex",
+      "--evaluator-provider",
+      "pi"
+    ], { storePath, tasksDir, worktreesDir });
+
+    assert.equal(retry.ok, true);
+    assert.equal(retry.state, "DONE");
+    assert.equal(retry.steps.length, 4);
+
+    const retryReport = JSON.parse(await readFile(retry.steps[2].reportPath, "utf8"));
+    assert.match(retryReport.previousEvaluatorFeedback, /fake pi requested retry/);
+    assert.ok(retryReport.previousEvaluatorReportPath.endsWith("evaluator-report.json"));
+    assert.match(retryReport.stdoutSummary, /Previous findings addressed: fake pi requested retry/);
+  } finally {
+    delete process.env.ANCHOR_CODEX_COMMAND;
+    delete process.env.ANCHOR_CODEX_ARGV_JSON;
+    delete process.env.ANCHOR_PI_COMMAND;
+    delete process.env.ANCHOR_PI_ARGV_JSON;
+  }
+});
+
 test("run-retry rejects unknown providers before attempts or state changes", async () => {
   const dir = await tempDir();
   const tasksDir = path.join(dir, "tasks");
