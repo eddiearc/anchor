@@ -27,11 +27,8 @@ Anchor takes the architecture described in Anthropic's [Harness design for long-
 ## Installation
 
 ```bash
-# Install from GitHub (Node.js >= 20 + pnpm required)
-npm install -g github:eddiearc/anchor
-
-# Or with pnpm
-pnpm add -g github:eddiearc/anchor
+# Install from GitHub (Node.js >= 20 required)
+npm install -g https://github.com/eddiearc/anchor/archive/refs/heads/main.tar.gz
 ```
 
 Verify:
