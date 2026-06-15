@@ -37,7 +37,8 @@
   "scripts": {
     "anchor": "pnpm build && node dist/cli/index.js",
     "build": "tsc -p tsconfig.build.json",
-    "pack:check": "pnpm build && pnpm test && npm pack --dry-run",
+    "pack:check": "pnpm test && npm pack --dry-run",
+    "prepare": "npm run build",
     "publish:dry-run": "npm publish --dry-run --access public",
     "prepublishOnly": "pnpm pack:check",
     "test": "pnpm build && node --test tests/*.test.mjs",

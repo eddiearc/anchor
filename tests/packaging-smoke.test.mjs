@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -27,6 +27,41 @@ async function execText(command, args, options) {
   const { stdout } = await execFileAsync(command, args, { encoding: "utf8", maxBuffer: 1024 * 1024, ...options });
   return stdout.trim();
 }
+
+async function createSourceCheckoutWithoutDist(repoRoot, checkoutRoot) {
+  const { stdout } = await execFileAsync("git", ["ls-files", "-z"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024
+  });
+
+  for (const filePath of stdout.split("\0").filter(Boolean)) {
+    if (filePath.startsWith("dist/")) continue;
+    const targetPath = path.join(checkoutRoot, filePath);
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await copyFile(path.join(repoRoot, filePath), targetPath);
+  }
+
+  await symlink(path.join(repoRoot, "node_modules"), path.join(checkoutRoot, "node_modules"), "dir");
+}
+
+test("npm pack builds publishable dist from a source checkout", async () => {
+  const repoRoot = process.cwd();
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "anchor-packaging-source-"));
+  const sourceDir = path.join(tmp, "source");
+  const packDir = path.join(tmp, "pack");
+  await mkdir(sourceDir, { recursive: true });
+  await mkdir(packDir, { recursive: true });
+  await createSourceCheckoutWithoutDist(repoRoot, sourceDir);
+
+  const pack = await execJson("npm", ["pack", "--json", "--pack-destination", packDir], { cwd: sourceDir });
+  const tarballFiles = pack[0].files.map((file) => file.path);
+
+  assert(tarballFiles.includes("dist/cli/index.js"));
+  assert(tarballFiles.includes("dist/index.d.ts"));
+  assert.equal(tarballFiles.some((filePath) => filePath.startsWith("src/")), false);
+  assert.equal(tarballFiles.some((filePath) => filePath.startsWith("tests/")), false);
+});
 
 test("npm tarball installs an anchor binary that works outside the source repo", async () => {
   const repoRoot = process.cwd();
