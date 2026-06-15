@@ -44,7 +44,6 @@ Failure outputs include:
 ## Sequence
 
 ```bash
-anchor init
 RUN_JSON="$(anchor run "test task")"
 TASK_ID="$(node -e 'const fs=require("fs"); console.log(JSON.parse(fs.readFileSync(0, "utf8")).taskId)' <<<"$RUN_JSON")"
 anchor next "$TASK_ID"
@@ -83,7 +82,6 @@ Successful output includes `generatorProvider`, `evaluatorProvider`, and `steps[
 
 Agents should expect non-zero exits with JSON for common failures:
 
-- `anchor init` outside a git repo: `error: "not_git_repo"`
 - `anchor next TASK-404`: `error: "task_not_found"`
 - `anchor status TASK-404`: `error: "task_not_started"`
 - `anchor generate <taskId>` before BUILD: `error: "generate_requires_build_state"`

@@ -42,9 +42,6 @@ anchor --help
 
 ```bash
 # Inside any git repo
-anchor init
-
-# Create and plan a task
 anchor run "Add rate limiting to the login endpoint"
 
 # See what's next
@@ -63,6 +60,20 @@ anchor evaluate <taskId>
 # Check status
 anchor status <taskId>
 ```
+
+Anchor works without an init step. Runtime files are created under `.anchor/`
+as needed, and repo config is optional.
+
+Configuration is merged field-by-field in this order:
+
+1. built-in defaults
+2. `~/.anchor/config.yaml`
+3. `<git-root>/.anchor/config.yaml`
+4. `ANCHOR_CONFIG_PATH`
+
+The global config is auto-created at `~/.anchor/config.yaml` when missing.
+Create `<git-root>/.anchor/config.yaml` only when a repository needs
+project-specific overrides.
 
 For agent integrations, use the JSON/exit-code protocol in [docs/agent-cli-protocol.md](docs/agent-cli-protocol.md). Provider backends are defined in [docs/provider-adapter-interface.md](docs/provider-adapter-interface.md), with runner details in [docs/codex-provider.md](docs/codex-provider.md) and [docs/pi-provider.md](docs/pi-provider.md). Anchor's canonical task identifier is `taskId`.
 
@@ -490,9 +501,6 @@ Anchor itself doesn't implement tools (read, write, bash, etc.) — it inherits 
 ## CLI Design (Draft)
 
 ```bash
-# Initialize anchor in a project
-anchor init
-
 # Run with auto-triage (default)
 anchor run "Add OAuth 2.0 device code flow"
 

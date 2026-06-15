@@ -1,7 +1,10 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+const execFileAsync = promisify(execFile);
 function templatePath() {
     // From dist/core/config.js → repo root
     const dir = path.dirname(fileURLToPath(import.meta.url));
@@ -28,23 +31,75 @@ async function readDefaultConfigContent() {
     }
 }
 export async function loadAnchorConfig() {
-    const configPath = configFilePath();
+    const defaultContent = await readDefaultConfigContent();
+    const configs = [parseConfig(defaultContent)];
+    const globalPath = globalConfigPath();
+    configs.push(parseConfig(await readOrCreateConfig(globalPath, defaultContent)));
+    const repoPath = await repoConfigPath();
+    if (repoPath && await exists(repoPath)) {
+        configs.push(parseConfig(await readFile(repoPath, "utf8")));
+    }
+    const explicitPath = process.env.ANCHOR_CONFIG_PATH;
+    if (explicitPath) {
+        configs.push(parseConfig(await readOrCreateConfig(explicitPath, defaultContent)));
+    }
+    return mergeConfigs(configs);
+}
+function globalConfigPath() {
+    return path.join(homedir(), ".anchor", "config.yaml");
+}
+async function repoConfigPath() {
+    const git = await gitRoot();
+    if (!git)
+        return undefined;
+    return path.join(git, ".anchor", "config.yaml");
+}
+async function gitRoot() {
     try {
-        const raw = await readFile(configPath, "utf8");
-        return parseConfig(raw);
+        const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
+            cwd: process.cwd(),
+            encoding: "utf8"
+        });
+        return stdout.trim();
+    }
+    catch {
+        return undefined;
+    }
+}
+async function readOrCreateConfig(configPath, defaultContent) {
+    try {
+        return await readFile(configPath, "utf8");
     }
     catch (error) {
         if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-            const defaultContent = await readDefaultConfigContent();
             await mkdir(path.dirname(configPath), { recursive: true });
             await writeFile(configPath, defaultContent);
-            return parseConfig(defaultContent);
+            return defaultContent;
         }
         throw error;
     }
 }
-function configFilePath() {
-    return process.env.ANCHOR_CONFIG_PATH ?? path.join(homedir(), ".anchor", "config.yaml");
+async function exists(filePath) {
+    try {
+        await stat(filePath);
+        return true;
+    }
+    catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT")
+            return false;
+        throw error;
+    }
+}
+function mergeConfigs(configs) {
+    return configs.reduce((merged, config) => {
+        return {
+            ...merged,
+            ...definedEntries(config)
+        };
+    }, {});
+}
+function definedEntries(config) {
+    return Object.fromEntries(Object.entries(config).filter(([, value]) => value !== undefined));
 }
 export function composePrompt(config, roleKey, base) {
     const blocks = [base];

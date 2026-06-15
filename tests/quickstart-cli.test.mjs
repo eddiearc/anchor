@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -29,7 +29,11 @@ async function runJson(args, cwd) {
       cwd,
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
-      env: { ...process.env, ANCHOR_CONFIG_PATH: path.join(cwd, ".test-anchor-home", "config.yaml") }
+      env: {
+        ...process.env,
+        HOME: path.join(cwd, ".test-home"),
+        ANCHOR_CONFIG_PATH: path.join(cwd, ".test-anchor-home", "config.yaml")
+      }
     });
     return { ...JSON.parse(stdout), exitCode: 0 };
   } catch (error) {
@@ -40,45 +44,9 @@ async function runJson(args, cwd) {
   }
 }
 
-test("anchor init creates local structure and is idempotent in a git repo", async () => {
-  const repo = await tempDir();
-  await execFileAsync("git", ["init"], { cwd: repo, encoding: "utf8" });
-  const repoRoot = await realpath(repo);
-
-  const first = await runJson(["init"], repo);
-  assert.equal(first.ok, true);
-  assert.equal(first.command, "init");
-  assert.equal(first.anchorDir, path.join(repoRoot, ".anchor"));
-  assert.equal(first.configPath, path.join(repoRoot, ".anchor", "config.yaml"));
-  assert.deepEqual(first.nextCommands, ['anchor run "test task"']);
-  assert.equal(await exists(path.join(repo, ".anchor", "tasks")), true);
-  assert.equal(await exists(path.join(repo, ".anchor", "worktrees")), true);
-  assert.equal(await exists(path.join(repo, ".anchor", "config.yaml")), true);
-
-  await writeFile(path.join(repo, ".anchor", "events.jsonl"), "sentinel\n");
-  await mkdir(path.join(repo, ".anchor", "tasks", "TASK-999"), { recursive: true });
-  await writeFile(path.join(repo, ".anchor", "tasks", "TASK-999", "contract.yaml"), "sentinel\n");
-
-  const second = await runJson(["init"], repo);
-  assert.equal(second.ok, true);
-  assert.equal(second.configCreated, false);
-  assert.equal(await readFile(path.join(repo, ".anchor", "events.jsonl"), "utf8"), "sentinel\n");
-  assert.equal(await readFile(path.join(repo, ".anchor", "tasks", "TASK-999", "contract.yaml"), "utf8"), "sentinel\n");
-});
-
-test("anchor init gives a clear error outside a git repo", async () => {
-  const dir = await tempDir();
-  const result = await runJson(["init"], dir);
-  assert.equal(result.exitCode, 1);
-  assert.equal(result.ok, false);
-  assert.equal(result.error, "not_git_repo");
-  assert.match(result.message, /git repository/);
-});
-
 test("anchor run and next guide the quickstart path without generating code", async () => {
   const repo = await tempDir();
   await execFileAsync("git", ["init"], { cwd: repo, encoding: "utf8" });
-  await runJson(["init"], repo);
 
   const run = await runJson(["run", "test task"], repo);
   assert.equal(run.ok, true);
@@ -92,6 +60,8 @@ test("anchor run and next guide the quickstart path without generating code", as
     "anchor workspace create TASK-001"
   ]);
   assert.equal(await exists(path.join(repo, run.contractPath)), true);
+  assert.equal(await exists(path.join(repo, ".anchor", "events.jsonl")), true);
+  assert.equal(await exists(path.join(repo, ".anchor", "config.yaml")), false);
 
   const humanNext = await runJson(["next", run.taskId], repo);
   assert.equal(humanNext.ok, true);
@@ -143,7 +113,6 @@ test("anchor run and next guide the quickstart path without generating code", as
 test("anchor next reports a clear error for unknown tasks", async () => {
   const repo = await tempDir();
   await execFileAsync("git", ["init"], { cwd: repo, encoding: "utf8" });
-  await runJson(["init"], repo);
 
   const result = await runJson(["next", "TASK-404"], repo);
   assert.equal(result.exitCode, 1);
