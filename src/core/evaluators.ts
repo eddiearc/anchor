@@ -5,7 +5,7 @@ import { generatorReportPath } from "./generators.js";
 import { resolveProvider, type ProviderDefinition, type ProviderError } from "./providers.js";
 import { type EvalVerdict } from "./state-machine.js";
 import { composePrompt, type AnchorConfig } from "./config.js";
-import { contractPathForTask, readDefaultFailCriteria } from "./contracts.js";
+import { contractPathForTask, readDefaultFailCriteria, requiresDefaultFailCriteria } from "./contracts.js";
 import {
   type CommandRunner,
   type CommandResult,
@@ -557,7 +557,16 @@ async function validateEvidenceGate(
   if (verdict.verdict !== "PASS") return { ok: true };
 
   const requiredCriteria = readDefaultFailCriteria(contract);
-  if (requiredCriteria.length === 0) return { ok: true };
+  if (requiredCriteria.length === 0) {
+    if (requiresDefaultFailCriteria(contract)) {
+      return {
+        ok: false,
+        message: "PASS verdict requires default-fail criteria in non-quick contracts.",
+        detail: JSON.stringify({ reason: "missing_default_fail_criteria" })
+      };
+    }
+    return { ok: true };
+  }
 
   const results = verdict.criteriaResults ?? [];
   const resultById = new Map(results.map((result) => [result.id, result]));

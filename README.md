@@ -324,6 +324,22 @@ contract:
         - "POST /auth/device/code returns 200 with device_code, user_code, verification_uri, expires_in, interval"
         - "Invalid client_id returns 400 with error_description"
         - "Rate-limited to 5 requests per minute per IP"
+      criteria:
+        - id: "1.1"
+          description: "POST /auth/device/code returns 200 with device_code, user_code, verification_uri, expires_in, interval"
+          passes: false
+          evidence_required:
+            - test_output
+        - id: "1.2"
+          description: "Invalid client_id returns 400 with error_description"
+          passes: false
+          evidence_required:
+            - test_output
+        - id: "1.3"
+          description: "Rate-limited to 5 requests per minute per IP"
+          passes: false
+          evidence_required:
+            - test_output
 
     - id: "2"
       description: "Implement token polling endpoint POST /auth/device/token"
@@ -754,12 +770,13 @@ The R5 deterministic planner template writes YAML with:
 - `version`
 - `goal.summary`
 - `mode`
-- `steps`
-- `acceptance_criteria`
-- `files.allowlist`
-- `files.denylist`
-- `commands`
-- `non_goals`
+  - `steps`
+  - `acceptance_criteria`
+  - `criteria` entries with `passes: false` for default-fail evidence gates
+  - `files.allowlist`
+  - `files.denylist`
+  - `commands`
+  - `non_goals`
 
 There is no LLM or provider call in the deterministic contract flow. The contract artifact is generated from the task string and run id.
 

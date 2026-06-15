@@ -4,7 +4,7 @@ import { getWorkspaceGitStatus } from "./workspaces.js";
 import { generatorReportPath } from "./generators.js";
 import { resolveProvider } from "./providers.js";
 import { composePrompt } from "./config.js";
-import { contractPathForTask, readDefaultFailCriteria } from "./contracts.js";
+import { contractPathForTask, readDefaultFailCriteria, requiresDefaultFailCriteria } from "./contracts.js";
 import { defaultCommandRunner, defaultRetryConfig, runAgent, buildCodexArgv, buildPiArgv, codexCommand, piCommand, isCommandUnavailable, summarizeOutput, redactCodexArgv } from "./agent-runner.js";
 export async function runEvaluator(input, runner = defaultCommandRunner) {
     const provider = resolveProvider(evaluatorProviders(runner), input.adapter, "evaluator");
@@ -379,8 +379,16 @@ async function validateEvidenceGate(contract, worktreePath, verdict) {
     if (verdict.verdict !== "PASS")
         return { ok: true };
     const requiredCriteria = readDefaultFailCriteria(contract);
-    if (requiredCriteria.length === 0)
+    if (requiredCriteria.length === 0) {
+        if (requiresDefaultFailCriteria(contract)) {
+            return {
+                ok: false,
+                message: "PASS verdict requires default-fail criteria in non-quick contracts.",
+                detail: JSON.stringify({ reason: "missing_default_fail_criteria" })
+            };
+        }
         return { ok: true };
+    }
     const results = verdict.criteriaResults ?? [];
     const resultById = new Map(results.map((result) => [result.id, result]));
     for (const criterion of requiredCriteria) {

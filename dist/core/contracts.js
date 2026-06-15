@@ -139,6 +139,15 @@ export function readDefaultFailCriteria(contract) {
     }
     return criteria.filter((criterion) => criterion.passes === false);
 }
+export function requiresDefaultFailCriteria(contract) {
+    const mode = readContractMode(contract);
+    return mode !== "quick";
+}
+export function readContractMode(contract) {
+    const match = /^mode:\s*(?:"([^"]+)"|'([^']+)'|([^\n#]+))/m.exec(contract);
+    const mode = match ? (match[1] ?? match[2] ?? match[3]).trim() : null;
+    return mode === "quick" || mode === "standard" || mode === "thorough" ? mode : null;
+}
 export function readContractStepIds(contract) {
     const lines = contract.split("\n");
     const stepIds = [];

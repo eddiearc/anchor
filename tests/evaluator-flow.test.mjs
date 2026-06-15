@@ -206,6 +206,72 @@ test("codex evaluator rejects PASS without criterion evidence for default-fail c
   }
 });
 
+test("codex evaluator rejects PASS when a non-quick contract has no default-fail criteria", async () => {
+  const dir = await tempDir();
+  const tasksDir = path.join(dir, "tasks");
+  const worktreesDir = path.join(dir, "worktrees");
+  const storePath = path.join(dir, "events.jsonl");
+
+  const plan = await runJson(["plan", "Missing default-fail criteria"], { storePath, tasksDir });
+  await runJson(["approve", plan.taskId], { storePath, tasksDir });
+  await runJson(["workspace", "create", plan.taskId], { storePath, tasksDir, worktreesDir });
+  await runJson(["generate", plan.taskId], { storePath, tasksDir, worktreesDir });
+
+  await writeFile(plan.contractPath, [
+    "mode: standard",
+    "reasoning: missing criteria test",
+    "affected_scope:",
+    "  - src/**",
+    "contract:",
+    `  id: "${plan.taskId}"`,
+    "  goal:",
+    "    summary: missing criteria test",
+    "  files:",
+    "    allowlist:",
+    "      - src/**",
+    "    denylist:",
+    "      - secrets/**",
+    "  constraints:",
+    "    - All existing tests pass",
+    "  steps:",
+    "    - id: \"1\"",
+    "      description: missing default-fail criteria",
+    "      acceptance:",
+    "        - All existing tests pass",
+    "  completion_gate:",
+    "    type: all",
+    "    conditions:",
+    "      - All existing tests pass",
+    ""
+  ].join("\n"));
+
+  const fakeCodex = path.join(dir, "fake-codex-missing-criteria.sh");
+  await writeFile(fakeCodex, [
+    "#!/bin/sh",
+    "mkdir -p \"$PWD/.anchor/eval\" 2>/dev/null || true",
+    `echo '{"verdict":"PASS","feedback":"Looks good.","testsRun":1,"testsFailed":0,"criteriaResults":[]}' > "$PWD/.anchor/eval/verdict.json"`
+  ].join("\n"));
+  await chmod(fakeCodex, 0o755);
+
+  process.env.ANCHOR_CODEX_COMMAND = fakeCodex;
+  process.env.ANCHOR_CODEX_ARGV_JSON = JSON.stringify(["fake-exec", "--cd", "__worktree__"]);
+  try {
+    const evalResult = await runJsonWithExit(["evaluate", plan.taskId, "--provider", "codex"], { storePath, tasksDir, worktreesDir });
+
+    assert.notEqual(evalResult.exitCode, 0);
+    assert.equal(evalResult.json.ok, false);
+    assert.equal(evalResult.json.error.code, "EVIDENCE_REQUIRED");
+    assert.match(evalResult.json.error.message, /default-fail criteria/);
+
+    const store = createFileRunStore(storePath);
+    const snapshot = await store.getCurrentState(plan.taskId);
+    assert.equal(snapshot.state, "CHECK");
+  } finally {
+    delete process.env.ANCHOR_CODEX_COMMAND;
+    delete process.env.ANCHOR_CODEX_ARGV_JSON;
+  }
+});
+
 test("codex evaluator valid FAIL verdict returns CHECK to BUILD", async () => {
   const dir = await tempDir();
   const tasksDir = path.join(dir, "tasks");

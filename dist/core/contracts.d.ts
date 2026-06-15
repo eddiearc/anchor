@@ -32,5 +32,7 @@ export declare function contractPathForTask(artifactsDir: string, taskId: string
 export declare function contractIdForTask(taskId: string): string;
 export declare function serializeContract(contract: ContractArtifact): string;
 export declare function readDefaultFailCriteria(contract: string): ContractCriterion[];
+export declare function requiresDefaultFailCriteria(contract: string): boolean;
+export declare function readContractMode(contract: string): "quick" | "standard" | "thorough" | null;
 export declare function readContractStepIds(contract: string): string[];
 export declare function sha256(content: string): string;
