@@ -39,7 +39,7 @@
     "build": "tsc -p tsconfig.build.json",
     "pack:check": "pnpm build && pnpm test && npm pack --dry-run",
     "publish:dry-run": "npm publish --dry-run --access public",
-    "prepare": "pnpm build",
+    "prepare": "tsc -p tsconfig.build.json",
     "prepublishOnly": "pnpm pack:check",
     "test": "pnpm build && node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit"
