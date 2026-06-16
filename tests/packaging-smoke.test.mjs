@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -29,7 +29,7 @@ async function execText(command, args, options) {
 }
 
 async function createSourceCheckoutWithoutDist(repoRoot, checkoutRoot) {
-  const { stdout } = await execFileAsync("git", ["ls-files", "-z"], {
+  const { stdout } = await execFileAsync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
     cwd: repoRoot,
     encoding: "utf8",
     maxBuffer: 1024 * 1024
@@ -41,11 +41,9 @@ async function createSourceCheckoutWithoutDist(repoRoot, checkoutRoot) {
     await mkdir(path.dirname(targetPath), { recursive: true });
     await copyFile(path.join(repoRoot, filePath), targetPath);
   }
-
-  await symlink(path.join(repoRoot, "node_modules"), path.join(checkoutRoot, "node_modules"), "dir");
 }
 
-test("npm pack builds publishable dist from a source checkout", async () => {
+test("npm pack bootstraps a publishable dist from a bare source checkout", async () => {
   const repoRoot = process.cwd();
   const tmp = await mkdtemp(path.join(os.tmpdir(), "anchor-packaging-source-"));
   const sourceDir = path.join(tmp, "source");
