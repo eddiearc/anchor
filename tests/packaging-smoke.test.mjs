@@ -52,7 +52,10 @@ test("npm pack bootstraps a publishable dist from a bare source checkout", async
   await mkdir(packDir, { recursive: true });
   await createSourceCheckoutWithoutDist(repoRoot, sourceDir);
 
-  const pack = await execJson("npm", ["pack", "--json", "--pack-destination", packDir], { cwd: sourceDir });
+  const pack = await execJson("npm", ["pack", "--json", "--pack-destination", packDir], {
+    cwd: sourceDir,
+    env: { ...process.env, npm_config_global: "true" }
+  });
   const tarballFiles = pack[0].files.map((file) => file.path);
 
   assert(tarballFiles.includes("dist/cli/index.js"));
