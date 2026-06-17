@@ -1,0 +1,4 @@
+interface:
+  display_name: "Anchor"
+  short_description: "Initialize and use the Anchor coding harness."
+  default_prompt: "Use $anchor to initialize Anchor in this project."
